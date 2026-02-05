@@ -18,8 +18,6 @@ let apecTokenExpiry = null;
 let apecDeliveryPoints = null;
 let emexCid = null;
 let emexLoginTime = null;
-let thunderCookies = null;
-let thunderSessionExpiry = null;
 let stimoCookies = null;
 let stimoLoginTime = null;
 
@@ -316,138 +314,25 @@ async function searchStimo(partNumber) {
   }
 }
 
-// ============ THUNDER (PitMax) ============
-const THUNDER_BASE = 'https://pitmaxauto.com';
-const THUNDER_GWT_USER = `${THUNDER_BASE}/com.iisd.uiw.pm.Start/GWTWebServiceUser`;
-const THUNDER_GWT_PITMAX = `${THUNDER_BASE}/com.iisd.uiw.pm.Start/GWTWebServicePITMax`;
-const THUNDER_MODULE = `${THUNDER_BASE}/com.iisd.uiw.pm.Start/`;
-const THUNDER_PERM = '70709A8D465EC375F1DBE979394D3AB3';
-const THUNDER_POL_LOGIN = 'CBA32746B023408F8C29D3768C24D68B';
-const THUNDER_POL_SEARCH = '48FDBB0C1ABD9AB543E5F4D21ABEB03D';
-const THUNDER_USER = process.env.THUNDER_USER || 'autofix.parts';
-const THUNDER_PASS = process.env.THUNDER_PASS || '414001';
-
-const THUNDER_HEADERS = {
-  'Content-Type': 'text/x-gwt-rpc; charset=UTF-8',
-  'X-GWT-Module-Base': THUNDER_MODULE,
-  'X-GWT-Permutation': THUNDER_PERM,
-  'Origin': THUNDER_BASE,
-  'Referer': `${THUNDER_BASE}/`,
-  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-};
-
-function parseGwtResponse(text) {
-  if (text.startsWith('//EX')) throw new Error('GWT Exception');
-  if (!text.startsWith('//OK')) throw new Error('Bad GWT response');
-  const content = text.substring(4);
-  const lastBracket = content.lastIndexOf('["');
-  if (lastBracket === -1) return { stringTable: [] };
-  let depth = 0, end = -1;
-  for (let i = lastBracket; i < content.length; i++) {
-    if (content[i] === '[') depth++;
-    else if (content[i] === ']') { depth--; if (depth === 0) { end = i + 1; break; } }
-  }
-  if (end === -1) end = content.length;
-  try {
-    return { stringTable: JSON.parse(content.substring(lastBracket, end)) };
-  } catch (e) {
-    const strings = [];
-    const re = /"((?:[^"\\]|\\.)*)"/g;
-    let m;
-    while ((m = re.exec(content)) !== null) strings.push(m[1]);
-    return { stringTable: strings };
-  }
-}
-
-async function thunderLogin() {
-  if (thunderCookies && thunderSessionExpiry && Date.now() < thunderSessionExpiry) {
-    return thunderCookies;
-  }
-  
-  let cookies = '';
-  try {
-    const r = await fetch(THUNDER_BASE, { headers: { 'User-Agent': THUNDER_HEADERS['User-Agent'] } });
-    cookies = extractCookies(r.headers);
-  } catch (e) { /* ok */ }
-  
-  const payload = `7|0|7|${THUNDER_MODULE}|${THUNDER_POL_LOGIN}|com.iisd.uiw.um.client.user.s.UserGWTWS|login|java.lang.String/2004016611|${THUNDER_USER}|${THUNDER_PASS}|1|2|3|4|2|5|5|6|7|`;
-  const resp = await fetch(THUNDER_GWT_USER, {
-    method: 'POST',
-    headers: { ...THUNDER_HEADERS, 'Cookie': cookies },
-    body: payload
-  });
-  
-  cookies = mergeCookies(cookies, extractCookies(resp.headers));
-  const body = await resp.text();
-  if (!body.startsWith('//OK')) throw new Error('Thunder login failed');
-  
-  thunderCookies = cookies;
-  thunderSessionExpiry = Date.now() + 30 * 60 * 1000;
-  console.log('Thunder: logged in');
-  return cookies;
-}
+// ============ THUNDER (via home proxy) ============
+const THUNDER_PROXY_URL = process.env.THUNDER_PROXY_URL || 'https://c63a-95-42-25-11.ngrok-free.app';
 
 async function searchThunder(partNumber) {
   try {
-    const cookies = await thunderLogin();
-    const pn = partNumber.toLowerCase();
-    
-    // getManyParts
-    const p1 = `7|0|12|${THUNDER_MODULE}|${THUNDER_POL_SEARCH}|com.iisd.uiw.auto.client.search.oe.s.PartSearchGWTWS|getManyParts|com.iisd.fw.data.IISDResultSetDef/4116809468|[Lcom.iisd.fw.data.IISDResultSetFilterDef;/1103246466|com.iisd.fw.data.IISDResultSetFilterDef/3152666539|MarkGroupStationID|0|MarkGroupID|ProdNum|${pn}|1|2|3|4|1|5|5|2|0|0|6|3|7|0|8|0|0|0|9|7|0|10|0|0|0|9|7|0|11|0|0|2|12|0|0|30|`;
-    const r1 = await fetch(THUNDER_GWT_PITMAX, {
-      method: 'POST',
-      headers: { ...THUNDER_HEADERS, 'Cookie': cookies },
-      body: p1
+    const response = await fetch(`${THUNDER_PROXY_URL}/api/thunder-search?q=${encodeURIComponent(partNumber)}`, {
+      headers: { 'ngrok-skip-browser-warning': 'true' }
     });
-    const b1 = await r1.text();
-    if (!b1.startsWith('//OK')) return [];
-    
-    const parsed1 = parseGwtResponse(b1);
-    const st = parsed1.stringTable;
-    const skip = ['com.iisd', '[L', 'java.'];
-    const fields = new Set(['ProdStationID','ProdID','MarkGroupStationID','MarkGroupID','ProdNum','ProdName','NewProdNum','NewProdName','AltProdMarkStationID','AltProdMarkID','AltProdNum','AltProdName','Weight','Active','ProdImage','ClientPrice','ClientPriceCurrencyID','Brand','Seats']);
-    const vals = st.filter(s => !skip.some(p => s.startsWith(p)) && !fields.has(s));
-    if (vals.length === 0) return [];
-    
-    let prodId = null, oem = null, brand = null, name = null, weight = 0;
-    for (const v of vals) { if (/^\d{5,}$/.test(v)) { prodId = v; break; } }
-    for (const v of vals) { if (/^[A-Z0-9\-]{5,}$/i.test(v) && !/^\d+$/.test(v)) { oem = v; break; } }
-    for (let i = vals.length - 1; i >= 0; i--) { if (/^[A-Za-z][A-Za-z\s]*$/.test(vals[i]) && vals[i].length > 1) { brand = vals[i]; break; } }
-    for (const v of vals) { if (/[\u0400-\u04FF]/.test(v)) { name = v; break; } }
-    for (const v of vals) { if (/^0\.\d{2}$/.test(v)) weight = parseFloat(v); }
-    if (!prodId) return [];
-    
-    // getPartAvailability
-    const p2 = `7|0|5|${THUNDER_MODULE}|${THUNDER_POL_SEARCH}|com.iisd.uiw.auto.client.search.oe.s.PartSearchGWTWS|getPartAvailability|I|1|2|3|4|2|5|5|1|${prodId}|`;
-    const r2 = await fetch(THUNDER_GWT_PITMAX, {
-      method: 'POST',
-      headers: { ...THUNDER_HEADERS, 'Cookie': cookies },
-      body: p2
-    });
-    const b2 = await r2.text();
-    
-    let clientPrice = 0, bestDays = null;
-    if (b2.startsWith('//OK')) {
-      const parsed2 = parseGwtResponse(b2);
-      const avVals = parsed2.stringTable.filter(s => !skip.some(p => s.startsWith(p)));
-      for (let i = 0; i < avVals.length; i++) {
-        if (avVals[i] === 'Клиентска цена') {
-          for (let j = i + 1; j < Math.min(i + 5, avVals.length); j++) {
-            if (/^\d+\.\d+$/.test(avVals[j])) { clientPrice = parseFloat(avVals[j]); break; }
-          }
-        }
-        if (avVals[i]?.startsWith?.('Поръчка')) {
-          for (let j = i + 1; j < Math.min(i + 8, avVals.length); j++) {
-            if (/^\d{1,3}$/.test(avVals[j]) && parseInt(avVals[j]) <= 365) {
-              const d = parseInt(avVals[j]);
-              if (bestDays === null || d < bestDays) bestDays = d;
-            }
-          }
-        }
-      }
+    if (!response.ok) {
+      console.warn('Thunder proxy error:', response.status);
+      return [];
     }
-    
-    return [{ oem: oem || partNumber.toUpperCase(), name: name || '', brand: brand || '', weight, clientPrice, bestDays }];
+    const data = await response.json();
+    return data.results || [];
+  } catch (err) {
+    console.warn('Thunder proxy error:', err.message);
+    return [];
+  }
+}
   } catch (err) {
     console.warn('Thunder search error:', err.message);
     return [];
@@ -594,17 +479,17 @@ app.get('/api/supplier-search', async (req, res) => {
       };
     });
     
-    // Transform Thunder results
+    // Transform Thunder results (already formatted from proxy)
     const thunderRawItems = thunderRaw.status === 'fulfilled' ? thunderRaw.value : [];
     const thunderResults = thunderRawItems.map(item => ({
-      partNumber: item.oem,
-      description: item.name || '',
-      priceEUR: Math.round((item.clientPrice || 0) * 100) / 100,
-      calculatedPrice: Math.round((item.clientPrice || 0) * 100) / 100,
-      stock: 1,
-      stockStatus: 'in_stock',
+      partNumber: item.partNumber,
+      description: item.description || '',
+      priceEUR: item.priceEUR || 0,
+      calculatedPrice: item.calculatedPrice || 0,
+      stock: item.stock || 1,
+      stockStatus: item.stockStatus || 'in_stock',
       brand: item.brand || '',
-      deliveryDays: item.bestDays ? `${item.bestDays} дни` : '15-20 дни',
+      deliveryDays: item.deliveryDays || '15-20 дни',
       weight: item.weight || 0,
       source: 'thunder',
       supplierName: 'Тандер'
@@ -646,8 +531,7 @@ app.get('/api/health', (req, res) => {
       rates: !!cachedRates,
       apec: !!apecToken,
       emex: !!emexCid,
-      stimo: !!stimoCookies,
-      thunder: !!thunderCookies
+      stimo: !!stimoCookies
     }
   });
 });
