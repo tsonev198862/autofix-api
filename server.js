@@ -4,14 +4,14 @@
 const express = require('express');
 const cors = require('cors');
 const https = require('https');
+const nodeFetch = require('node-fetch');
 
-// Custom fetch with SSL bypass for Thunder (PitMax has bad SSL cert)
-const fetchWithSSL = (url, options = {}) => {
-  if (url.includes('pitmaxauto.com')) {
-    const httpsAgent = new https.Agent({ rejectUnauthorized: false });
-    return fetch(url, { ...options, agent: httpsAgent });
-  }
-  return fetch(url, options);
+// Create HTTPS agent that ignores SSL errors (for PitMax)
+const httpsAgent = new https.Agent({ rejectUnauthorized: false });
+
+// Custom fetch for Thunder (PitMax has bad SSL cert)
+const fetchThunder = (url, options = {}) => {
+  return nodeFetch(url, { ...options, agent: httpsAgent });
 };
 
 const app = express();
@@ -377,7 +377,7 @@ async function thunderLogin() {
   console.log('Thunder: logging in...');
   let cookies = '';
   try {
-    const r = await fetchWithSSL(THUNDER_BASE, { headers: { 'User-Agent': THUNDER_HEADERS['User-Agent'] } });
+    const r = await fetchThunder(THUNDER_BASE, { headers: { 'User-Agent': THUNDER_HEADERS['User-Agent'] } });
     const setCookie = r.headers.get('set-cookie');
     if (setCookie) cookies = setCookie.split(';')[0];
   } catch (e) { 
@@ -385,7 +385,7 @@ async function thunderLogin() {
   }
   
   const payload = `7|0|7|${THUNDER_MODULE}|${THUNDER_POL_LOGIN}|com.iisd.uiw.um.client.user.s.UserGWTWS|login|java.lang.String/2004016611|${THUNDER_USER}|${THUNDER_PASS}|1|2|3|4|2|5|5|6|7|`;
-  const resp = await fetchWithSSL(THUNDER_GWT_USER, {
+  const resp = await fetchThunder(THUNDER_GWT_USER, {
     method: 'POST',
     headers: { ...THUNDER_HEADERS, 'Cookie': cookies },
     body: payload
@@ -411,7 +411,7 @@ async function searchThunder(partNumber) {
     
     // getManyParts
     const p1 = `7|0|12|${THUNDER_MODULE}|${THUNDER_POL_SEARCH}|com.iisd.uiw.auto.client.search.oe.s.PartSearchGWTWS|getManyParts|com.iisd.fw.data.IISDResultSetDef/4116809468|[Lcom.iisd.fw.data.IISDResultSetFilterDef;/1103246466|com.iisd.fw.data.IISDResultSetFilterDef/3152666539|MarkGroupStationID|0|MarkGroupID|ProdNum|${pn}|1|2|3|4|1|5|5|2|0|0|6|3|7|0|8|0|0|0|9|7|0|10|0|0|0|9|7|0|11|0|0|2|12|0|0|30|`;
-    const r1 = await fetchWithSSL(THUNDER_GWT_PITMAX, {
+    const r1 = await fetchThunder(THUNDER_GWT_PITMAX, {
       method: 'POST',
       headers: { ...THUNDER_HEADERS, 'Cookie': cookies },
       body: p1
@@ -438,7 +438,7 @@ async function searchThunder(partNumber) {
     
     // getPartAvailability
     const p2 = `7|0|5|${THUNDER_MODULE}|${THUNDER_POL_SEARCH}|com.iisd.uiw.auto.client.search.oe.s.PartSearchGWTWS|getPartAvailability|I|1|2|3|4|2|5|5|1|${prodId}|`;
-    const r2 = await fetchWithSSL(THUNDER_GWT_PITMAX, {
+    const r2 = await fetchThunder(THUNDER_GWT_PITMAX, {
       method: 'POST',
       headers: { ...THUNDER_HEADERS, 'Cookie': cookies },
       body: p2
