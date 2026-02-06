@@ -1,5 +1,5 @@
 // AutoFix API Backend — Express Server for Railway
-// All suppliers in one place: Impex, APEC, Emex, Stimo, Thunder
+// All suppliers in one place: Impex, APEC, Emex, Stimo, Thunder, Rotinger
 
 const express = require('express');
 const cors = require('cors');
@@ -486,6 +486,108 @@ async function searchThunder(partNumber) {
   }
 }
 
+// ============ ROTINGER (SOAP API) ============
+const ROTINGER_LOGIN = 'autofix_ws';
+const ROTINGER_PASSWORD = 'lnQZPr51';
+const ROTINGER_ENDPOINT = 'http://b2b.rotinger.pl/ProductWS/services/ProductServicePort';
+
+async function searchRotinger(partNumber) {
+  const startTime = Date.now();
+  const results = [];
+  
+  // Build SOAP request
+  const soapRequest = `<?xml version="1.0" encoding="UTF-8"?>
+<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/" xmlns:ns="http://cxfservice.proacta.pl/">
+  <soap:Body>
+    <ns:priceRequest>
+      <ns:requestObject>
+        <ns:login>${ROTINGER_LOGIN}</ns:login>
+        <ns:password>${ROTINGER_PASSWORD}</ns:password>
+        <ns:productQuery>
+          <ns:rotingerId>${partNumber}</ns:rotingerId>
+          <ns:quantity>1</ns:quantity>
+        </ns:productQuery>
+      </ns:requestObject>
+    </ns:priceRequest>
+  </soap:Body>
+</soap:Envelope>`;
+
+  try {
+    const response = await fetch(ROTINGER_ENDPOINT, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'text/xml; charset=utf-8',
+        'SOAPAction': 'urn:GetProductBrief'
+      },
+      body: soapRequest
+    });
+    
+    if (!response.ok) {
+      console.warn(`Rotinger API error: ${response.status}`);
+      return { results: [], elapsed: Date.now() - startTime, count: 0 };
+    }
+    
+    const xmlText = await response.text();
+    
+    // Parse SOAP response - extract product info from XML
+    const priceMatch = xmlText.match(/<price>([^<]+)<\/price>/i);
+    const nameMatch = xmlText.match(/<name>([^<]+)<\/name>/i);
+    const descMatch = xmlText.match(/<description>([^<]+)<\/description>/i);
+    const availMatch = xmlText.match(/<availability>([^<]+)<\/availability>/i);
+    const currencyMatch = xmlText.match(/<currency>([^<]+)<\/currency>/i);
+    const rotingerIdMatch = xmlText.match(/<rotingerId>([^<]+)<\/rotingerId>/i);
+    
+    if (priceMatch) {
+      const basePrice = parseFloat(priceMatch[1]) || 0;
+      
+      // Apply Stefan's formula: (price + 10€) * 1.5
+      const costPrice = basePrice + 10;
+      const retailPrice = Math.round(costPrice * 1.5 * 100) / 100;
+      
+      // Determine delivery based on product code
+      // GL = 7-8 days, T1/T2/T3 etc = 10-12 days
+      let deliveryDays = '7-8 дни';
+      if (/T\d+$/i.test(partNumber)) {
+        deliveryDays = '10-12 дни';
+      }
+      
+      // Check availability
+      const availability = availMatch ? availMatch[1] : '';
+      const inStock = availability.toLowerCase().includes('tak') || 
+                      availability.toLowerCase().includes('yes') ||
+                      parseInt(availability) > 0;
+      
+      results.push({
+        partNumber: rotingerIdMatch ? rotingerIdMatch[1] : partNumber,
+        description: descMatch ? descMatch[1] : (nameMatch ? nameMatch[1] : 'Rotinger brake part'),
+        brand: 'ROTINGER',
+        priceEUR: costPrice,
+        calculatedPrice: costPrice,
+        originalPrice: basePrice,
+        stock: inStock ? 1 : 0,
+        stockStatus: inStock ? 'in_stock' : 'on_order',
+        deliveryDays: deliveryDays,
+        source: 'rotinger',
+        supplierName: 'Rotinger',
+        currency: currencyMatch ? currencyMatch[1] : 'EUR'
+      });
+      
+      console.log(`Rotinger: ${partNumber} → ${basePrice}€ base, ${costPrice}€ cost, delivery: ${deliveryDays}`);
+    } else {
+      console.log(`Rotinger: no price found for ${partNumber}`);
+    }
+    
+  } catch (error) {
+    console.warn('Rotinger search error:', error.message);
+  }
+  
+  return {
+    results,
+    elapsed: Date.now() - startTime,
+    count: results.length
+  };
+}
+
 // ============ UNIFIED SEARCH ENDPOINT ============
 app.get('/api/supplier-search', async (req, res) => {
   const { q } = req.query;
@@ -505,13 +607,14 @@ app.get('/api/supplier-search', async (req, res) => {
     const deliveryPoints = apecTok ? await getApecDeliveryPoints(apecTok) : [];
     const deliveryPointID = deliveryPoints?.[0]?.DeliveryPointID ?? 0;
     
-    // Search ALL suppliers in parallel
-    const [impexRaw, apecRaw, emexRaw, stimoRaw, thunderRaw] = await Promise.allSettled([
+    // Search ALL suppliers in parallel (including Rotinger)
+    const [impexRaw, apecRaw, emexRaw, stimoRaw, thunderRaw, rotingerRaw] = await Promise.allSettled([
       searchImpex(q),
       apecTok ? searchApec(q, apecTok, deliveryPointID) : [],
       searchEmex(q),
       searchStimo(q),
-      searchThunder(q)
+      searchThunder(q),
+      searchRotinger(q)
     ]);
     
     // Transform Impex results
@@ -626,7 +729,7 @@ app.get('/api/supplier-search', async (req, res) => {
       };
     });
     
-    // Transform Thunder results (already formatted from proxy)
+    // Transform Thunder results
     const thunderRawItems = thunderRaw.status === 'fulfilled' ? thunderRaw.value : [];
     const thunderResults = thunderRawItems.map(item => ({
       partNumber: item.partNumber,
@@ -642,12 +745,16 @@ app.get('/api/supplier-search', async (req, res) => {
       supplierName: 'Тандер'
     }));
     
+    // Transform Rotinger results
+    const rotingerData = rotingerRaw.status === 'fulfilled' ? rotingerRaw.value : { results: [] };
+    const rotingerResults = rotingerData.results || [];
+    
     // Combine and sort
-    const allResults = [...impexResults, ...apecResults, ...emexResults, ...stimoResults, ...thunderResults];
+    const allResults = [...impexResults, ...apecResults, ...emexResults, ...stimoResults, ...thunderResults, ...rotingerResults];
     allResults.sort((a, b) => (a.calculatedPrice || 0) - (b.calculatedPrice || 0));
     
     const elapsed = Date.now() - startTime;
-    console.log(`✅ Search: ${q} → ${impexResults.length} Impex + ${apecResults.length} APEC + ${emexResults.length} Emex + ${stimoResults.length} Stimo + ${thunderResults.length} Thunder in ${elapsed}ms`);
+    console.log(`✅ Search: ${q} → ${impexResults.length} Impex + ${apecResults.length} APEC + ${emexResults.length} Emex + ${stimoResults.length} Stimo + ${thunderResults.length} Thunder + ${rotingerResults.length} Rotinger in ${elapsed}ms`);
     
     res.json({
       success: true,
@@ -657,6 +764,7 @@ app.get('/api/supplier-search', async (req, res) => {
       emexCount: emexResults.length,
       stimoCount: stimoResults.length,
       thunderCount: thunderResults.length,
+      rotingerCount: rotingerResults.length,
       totalCount: allResults.length,
       elapsed,
       rates,
