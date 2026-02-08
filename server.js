@@ -684,14 +684,19 @@ app.get('/api/supplier-search', async (req, res) => {
     const emexRawItems = emexRaw.status === 'fulfilled' ? emexRaw.value : [];
     
     // Known aftermarket brands to exclude (they use OEM numbers but are not original)
-    const aftermarketBrands = ['CTR', 'CTR OEM', '555', 'FEBEST', 'MASUMA', 'GMB', 'ASHIKA', 'NIPPARTS', 'JAPANPARTS', 'BLUE PRINT', 'OPTIMAL', 'MEYLE', 'LEMFORDER', 'MOOG', 'DELPHI', 'TRW', 'SIDEM', 'RTS', 'OCAP', 'BIRTH', 'FORMPART', 'MAPCO'];
+    // Include short codes like 'CT' for CTR
+    const aftermarketBrands = ['CTR', 'CT', '555', 'FEBEST', 'MASUMA', 'GMB', 'ASHIKA', 'NIPPARTS', 'JAPANPARTS', 'BLUE PRINT', 'OPTIMAL', 'MEYLE', 'LEMFORDER', 'MOOG', 'DELPHI', 'TRW', 'SIDEM', 'RTS', 'OCAP', 'BIRTH', 'FORMPART', 'MAPCO', 'FAG', 'SKF', 'SNR', 'NTN', 'KOYO', 'NSK', 'KAYABA', 'KYB', 'BILSTEIN', 'SACHS', 'MONROE', 'BOGE', 'KONI'];
     
     // Filter: ONLY exact part number matches AND exclude aftermarket brands
-    console.log('Emex raw brands:', emexRawItems.filter(i => i.number === searchedNormalized).map(i => ({ make: i.make, makeName: i.makeName, number: i.number })));
     const emexFiltered = emexRawItems.filter(item => {
       const itemNormalized = (item.number || '').replace(/[\s\-\.\/\\,;:_]+/g, '').toUpperCase();
-      const brandUpper = (item.make || item.makeName || '').toUpperCase();
-      const isAftermarket = aftermarketBrands.some(am => brandUpper.includes(am.toUpperCase()));
+      // Check both make (short code) and makeName (full name)
+      const makeUpper = (item.make || '').toUpperCase();
+      const makeNameUpper = (item.makeName || '').toUpperCase();
+      const isAftermarket = aftermarketBrands.some(am => {
+        const amUpper = am.toUpperCase();
+        return makeUpper === amUpper || makeNameUpper === amUpper || makeNameUpper.includes(amUpper);
+      });
       return itemNormalized === searchedNormalized && !isAftermarket;
     });
     
