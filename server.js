@@ -683,10 +683,15 @@ app.get('/api/supplier-search', async (req, res) => {
     // Transform Emex results - ONLY exact part number matches (no aftermarket/substitutes)
     const emexRawItems = emexRaw.status === 'fulfilled' ? emexRaw.value : [];
     
-    // Filter: ONLY exact part number matches
+    // Known aftermarket brands to exclude (they use OEM numbers but are not original)
+    const aftermarketBrands = ['CTR', 'CTR OEM', '555', 'FEBEST', 'MASUMA', 'GMB', 'ASHIKA', 'NIPPARTS', 'JAPANPARTS', 'BLUE PRINT', 'OPTIMAL', 'MEYLE', 'LEMFORDER', 'MOOG', 'DELPHI', 'TRW', 'SIDEM', 'RTS', 'OCAP', 'BIRTH', 'FORMPART', 'MAPCO'];
+    
+    // Filter: ONLY exact part number matches AND exclude aftermarket brands
     const emexFiltered = emexRawItems.filter(item => {
       const itemNormalized = (item.number || '').replace(/[\s\-\.\/\\,;:_]+/g, '').toUpperCase();
-      return itemNormalized === searchedNormalized;
+      const brandUpper = (item.make || item.makeName || '').toUpperCase();
+      const isAftermarket = aftermarketBrands.some(am => brandUpper.includes(am.toUpperCase()));
+      return itemNormalized === searchedNormalized && !isAftermarket;
     });
     
     // Deduplicate: keep best price per make (same number, different suppliers)
