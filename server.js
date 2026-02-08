@@ -603,6 +603,9 @@ app.get('/api/supplier-search', async (req, res) => {
   
   const startTime = Date.now();
   
+  // Normalize searched part number for filtering
+  const searchedNormalized = q.replace(/[\s\-\.\/\\,;:_]+/g, '').toUpperCase();
+  
   try {
     // Get rates and APEC token in parallel
     const [rates, apecTok] = await Promise.all([
@@ -677,14 +680,23 @@ app.get('/api/supplier-search', async (req, res) => {
       };
     });
     
-    // Transform Emex results
+    // Transform Emex results - ONLY exact part number matches (no aftermarket/substitutes)
     const emexRawItems = emexRaw.status === 'fulfilled' ? emexRaw.value : [];
+    
+    // Filter: ONLY exact part number matches
+    const emexFiltered = emexRawItems.filter(item => {
+      const itemNormalized = (item.number || '').replace(/[\s\-\.\/\\,;:_]+/g, '').toUpperCase();
+      return itemNormalized === searchedNormalized;
+    });
+    
+    // Deduplicate: keep best price per make (same number, different suppliers)
     const emexBest = new Map();
-    for (const item of emexRawItems) {
-      const key = `${item.make}_${item.number}`;
+    for (const item of emexFiltered) {
+      const key = item.make || 'unknown';
       const existing = emexBest.get(key);
       if (!existing || item.price < existing.price) emexBest.set(key, item);
     }
+    
     const emexResults = [...emexBest.values()].map(item => {
       const priceUSD = item.price || 0;
       const weightKg = item.weight || 0.5;
@@ -760,7 +772,7 @@ app.get('/api/supplier-search', async (req, res) => {
     allResults.sort((a, b) => (a.calculatedPrice || 0) - (b.calculatedPrice || 0));
     
     const elapsed = Date.now() - startTime;
-    console.log(`✅ Search: ${q} → ${impexResults.length} Impex + ${apecResults.length} APEC + ${emexResults.length} Emex + ${stimoResults.length} Stimo + ${thunderResults.length} Thunder + ${rotingerResults.length} Rotinger in ${elapsed}ms`);
+    console.log(`✅ Search: ${q} → ${impexResults.length} Impex + ${apecResults.length} APEC + ${emexResults.length} Emex (filtered from ${emexRawItems.length}) + ${stimoResults.length} Stimo + ${thunderResults.length} Thunder + ${rotingerResults.length} Rotinger in ${elapsed}ms`);
     
     res.json({
       success: true,
@@ -768,6 +780,7 @@ app.get('/api/supplier-search', async (req, res) => {
       impexCount: impexResults.length,
       apecCount: apecResults.length,
       emexCount: emexResults.length,
+      emexRawCount: emexRawItems.length,
       stimoCount: stimoResults.length,
       thunderCount: thunderResults.length,
       rotingerCount: rotingerResults.length,
