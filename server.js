@@ -503,10 +503,10 @@ async function searchRotinger(partNumber) {
 <soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
   <soap:Body>
     <priceRequest xmlns="http://ws.proacta.pl/">
-      <requestObject xmlns="http://cxfservice.proacta.pl/">
-        <login>${ROTINGER_LOGIN}</login>
-        <password>${ROTINGER_PASSWORD}</password>
-        <productQuery>
+      <requestObject>
+        <login xmlns="http://cxfservice.proacta.pl/">${ROTINGER_LOGIN}</login>
+        <password xmlns="http://cxfservice.proacta.pl/">${ROTINGER_PASSWORD}</password>
+        <productQuery xmlns="http://cxfservice.proacta.pl/">
           <quantity>1</quantity>
           <rotingerId>${cleanPN}</rotingerId>
         </productQuery>
