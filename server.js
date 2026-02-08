@@ -687,7 +687,7 @@ app.get('/api/supplier-search', async (req, res) => {
     const aftermarketBrands = ['CTR', 'CTR OEM', '555', 'FEBEST', 'MASUMA', 'GMB', 'ASHIKA', 'NIPPARTS', 'JAPANPARTS', 'BLUE PRINT', 'OPTIMAL', 'MEYLE', 'LEMFORDER', 'MOOG', 'DELPHI', 'TRW', 'SIDEM', 'RTS', 'OCAP', 'BIRTH', 'FORMPART', 'MAPCO'];
     
     // Filter: ONLY exact part number matches AND exclude aftermarket brands
-    console.log('Emex raw brands:', emexRawItems.map(i => ({ make: i.make, makeName: i.makeName, number: i.number })));
+    console.log('Emex raw brands:', emexRawItems.filter(i => i.number === searchedNormalized).map(i => ({ make: i.make, makeName: i.makeName, number: i.number })));
     const emexFiltered = emexRawItems.filter(item => {
       const itemNormalized = (item.number || '').replace(/[\s\-\.\/\\,;:_]+/g, '').toUpperCase();
       const brandUpper = (item.make || item.makeName || '').toUpperCase();
