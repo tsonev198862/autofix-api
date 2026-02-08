@@ -500,18 +500,18 @@ async function searchRotinger(partNumber) {
   
   // Build SOAP request with correct namespaces from WSDL
   const soapRequest = `<?xml version="1.0" encoding="UTF-8"?>
-<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/" xmlns:ws="http://ws.proacta.pl/" xmlns:cxf="http://cxfservice.proacta.pl/">
+<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/" xmlns:cxf="http://cxfservice.proacta.pl/">
   <soapenv:Body>
-    <ws:priceRequest>
-      <ws:requestObject>
+    <cxf:priceRequest>
+      <requestObject>
         <cxf:login>${ROTINGER_LOGIN}</cxf:login>
         <cxf:password>${ROTINGER_PASSWORD}</cxf:password>
         <cxf:productQuery>
           <cxf:quantity>1</cxf:quantity>
           <cxf:rotingerId>${cleanPN}</cxf:rotingerId>
         </cxf:productQuery>
-      </ws:requestObject>
-    </ws:priceRequest>
+      </requestObject>
+    </cxf:priceRequest>
   </soapenv:Body>
 </soapenv:Envelope>`;
 
