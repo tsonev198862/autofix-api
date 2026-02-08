@@ -495,24 +495,29 @@ async function searchRotinger(partNumber) {
   const startTime = Date.now();
   const results = [];
   
-  // Build SOAP request
+  // Clean part number - remove spaces
+  const cleanPN = partNumber.replace(/\s+/g, '');
+  
+  // Build SOAP request with correct namespaces from WSDL
   const soapRequest = `<?xml version="1.0" encoding="UTF-8"?>
-<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/" xmlns:ns="http://cxfservice.proacta.pl/">
-  <soap:Body>
-    <ns:priceRequest>
-      <ns:requestObject>
-        <ns:login>${ROTINGER_LOGIN}</ns:login>
-        <ns:password>${ROTINGER_PASSWORD}</ns:password>
-        <ns:productQuery>
-          <ns:rotingerId>${partNumber}</ns:rotingerId>
-          <ns:quantity>1</ns:quantity>
-        </ns:productQuery>
-      </ns:requestObject>
-    </ns:priceRequest>
-  </soap:Body>
-</soap:Envelope>`;
+<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/" xmlns:ws="http://ws.proacta.pl/" xmlns:cxf="http://cxfservice.proacta.pl/">
+  <soapenv:Body>
+    <ws:priceRequest>
+      <ws:requestObject>
+        <cxf:login>${ROTINGER_LOGIN}</cxf:login>
+        <cxf:password>${ROTINGER_PASSWORD}</cxf:password>
+        <cxf:productQuery>
+          <cxf:quantity>1</cxf:quantity>
+          <cxf:rotingerId>${cleanPN}</cxf:rotingerId>
+        </cxf:productQuery>
+      </ws:requestObject>
+    </ws:priceRequest>
+  </soapenv:Body>
+</soapenv:Envelope>`;
 
   try {
+    console.log(`Rotinger: searching for ${cleanPN}...`);
+    
     const response = await fetch(ROTINGER_ENDPOINT, {
       method: 'POST',
       headers: {
@@ -522,32 +527,33 @@ async function searchRotinger(partNumber) {
       body: soapRequest
     });
     
+    const xmlText = await response.text();
+    console.log('Rotinger response status:', response.status);
+    console.log('Rotinger raw response:', xmlText.substring(0, 800));
+    
     if (!response.ok) {
       console.warn(`Rotinger API error: ${response.status}`);
       return { results: [], elapsed: Date.now() - startTime, count: 0 };
     }
     
-    const xmlText = await response.text();
-    
-    // Parse SOAP response - extract product info from XML
-    const priceMatch = xmlText.match(/<price>([^<]+)<\/price>/i);
-    const nameMatch = xmlText.match(/<name>([^<]+)<\/name>/i);
-    const descMatch = xmlText.match(/<description>([^<]+)<\/description>/i);
-    const availMatch = xmlText.match(/<availability>([^<]+)<\/availability>/i);
-    const currencyMatch = xmlText.match(/<currency>([^<]+)<\/currency>/i);
-    const rotingerIdMatch = xmlText.match(/<rotingerId>([^<]+)<\/rotingerId>/i);
+    // Parse SOAP response - handle namespaced and non-namespaced tags
+    const priceMatch = xmlText.match(/<(?:ns\d*:)?price>([^<]+)<\/(?:ns\d*:)?price>/i);
+    const nameMatch = xmlText.match(/<(?:ns\d*:)?name>([^<]+)<\/(?:ns\d*:)?name>/i);
+    const descMatch = xmlText.match(/<(?:ns\d*:)?description>([^<]+)<\/(?:ns\d*:)?description>/i);
+    const availMatch = xmlText.match(/<(?:ns\d*:)?availability>([^<]+)<\/(?:ns\d*:)?availability>/i);
+    const currencyMatch = xmlText.match(/<(?:ns\d*:)?currency>([^<]+)<\/(?:ns\d*:)?currency>/i);
+    const rotingerIdMatch = xmlText.match(/<(?:ns\d*:)?rotingerId>([^<]+)<\/(?:ns\d*:)?rotingerId>/i);
     
     if (priceMatch) {
       const basePrice = parseFloat(priceMatch[1]) || 0;
       
-      // Apply Stefan's formula: (price + 10€) * 1.5
+      // Apply Stefan's formula: (price + 10€)
       const costPrice = basePrice + 10;
-      const retailPrice = Math.round(costPrice * 1.5 * 100) / 100;
       
       // Determine delivery based on product code
       // GL = 7-8 days, T1/T2/T3 etc = 10-12 days
       let deliveryDays = '7-8 дни';
-      if (/T\d+$/i.test(partNumber)) {
+      if (/T\d+$/i.test(cleanPN)) {
         deliveryDays = '10-12 дни';
       }
       
@@ -558,7 +564,7 @@ async function searchRotinger(partNumber) {
                       parseInt(availability) > 0;
       
       results.push({
-        partNumber: rotingerIdMatch ? rotingerIdMatch[1] : partNumber,
+        partNumber: rotingerIdMatch ? rotingerIdMatch[1] : cleanPN,
         description: descMatch ? descMatch[1] : (nameMatch ? nameMatch[1] : 'Rotinger brake part'),
         brand: 'ROTINGER',
         priceEUR: costPrice,
@@ -572,9 +578,9 @@ async function searchRotinger(partNumber) {
         currency: currencyMatch ? currencyMatch[1] : 'EUR'
       });
       
-      console.log(`Rotinger: ${partNumber} → ${basePrice}€ base, ${costPrice}€ cost, delivery: ${deliveryDays}`);
+      console.log(`Rotinger: ${cleanPN} → ${basePrice}€ base, ${costPrice}€ cost, delivery: ${deliveryDays}`);
     } else {
-      console.log(`Rotinger: no price found for ${partNumber}`);
+      console.log(`Rotinger: no price found for ${cleanPN}`);
     }
     
   } catch (error) {
