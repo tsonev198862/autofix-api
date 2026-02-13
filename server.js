@@ -1,5 +1,5 @@
 // AutoFix API Backend — Express Server for Railway
-// All suppliers in one place: Impex, APEC, Emex, Stimo, Thunder, Rotinger
+// All suppliers in one place: Impex, APEC, Emex, Stimo, Thunder
 
 const express = require('express');
 const cors = require('cors');
@@ -446,152 +446,99 @@ async function searchThunder(partNumber) {
     const b2 = await r2.text();
     
     let clientPrice = 0, bestDays = null;
+    const options = []; // { label, price, days }
     if (b2.startsWith('//OK')) {
       const parsed2 = parseGwtResponse(b2);
       const avVals = parsed2.stringTable.filter(s => !skip.some(p => s.startsWith(p)));
+      const labels = new Set(['Поръчка','Клиентска цена','Поръчка 1','Поръчка 2','Поръчка 10']);
+      
       for (let i = 0; i < avVals.length; i++) {
-        if (avVals[i] === 'Клиентска цена') {
-          for (let j = i + 1; j < Math.min(i + 5, avVals.length); j++) {
-            if (/^\d+\.\d+$/.test(avVals[j])) { clientPrice = parseFloat(avVals[j]); break; }
-          }
-        }
-        if (avVals[i]?.startsWith?.('Поръчка')) {
+        if (labels.has(avVals[i])) {
+          const label = avVals[i];
+          let price = 0, days = null;
           for (let j = i + 1; j < Math.min(i + 8, avVals.length); j++) {
-            if (/^\d{1,3}$/.test(avVals[j]) && parseInt(avVals[j]) <= 365) {
-              const d = parseInt(avVals[j]);
-              if (bestDays === null || d < bestDays) bestDays = d;
+            if (labels.has(avVals[j])) break;
+            if (/^\d+\.\d+$/.test(avVals[j]) && !price) {
+              price = parseFloat(avVals[j]);
+            } else if (/^\d{1,3}$/.test(avVals[j]) && parseInt(avVals[j]) <= 365 && days === null) {
+              days = parseInt(avVals[j]);
             }
+          }
+          if (price > 0) {
+            options.push({ label, price, days });
           }
         }
       }
+      
+      console.log('Thunder options:', JSON.stringify(options));
+      
+      if (options.length > 0) {
+        const cheapest = options.reduce((a, b) => a.price < b.price ? a : b);
+        clientPrice = cheapest.price;
+        bestDays = cheapest.days;
+      }
     }
-    console.log(`Thunder price: ${clientPrice}€, days: ${bestDays}`);
+    console.log(`Thunder price: ${clientPrice}€, days: ${bestDays}, options: ${options.length}`);
     
-    return [{
-      partNumber: oem || partNumber.toUpperCase(),
-      description: name || '',
-      brand: brand || '',
-      weight,
-      priceEUR: Math.round(clientPrice * 100) / 100,
-      calculatedPrice: Math.round(clientPrice * 100) / 100,
-      deliveryDays: bestDays ? `${bestDays} дни` : '15-20 дни',
-      stock: 1,
-      stockStatus: 'in_stock',
-      source: 'thunder',
-      supplierName: 'Тандер'
-    }];
+    // Build results — cheapest + fastest (if different)
+    const results = [];
+    const byPrice = [...options].sort((a, b) => a.price - b.price);
+    const byDays = [...options].filter(o => o.days !== null).sort((a, b) => a.days - b.days);
+    const cheapest = byPrice[0];
+    const fastest = byDays[0];
+    
+    if (cheapest) {
+      const days = (cheapest.days || 15) + 2;
+      results.push({
+        partNumber: oem || partNumber.toUpperCase(),
+        description: name || '',
+        brand: brand || '',
+        weight,
+        priceEUR: Math.round(cheapest.price * 100) / 100,
+        calculatedPrice: Math.round(cheapest.price * 100) / 100,
+        deliveryDays: `${days} дни`,
+        stock: 1, stockStatus: 'in_stock',
+        source: 'thunder', supplierName: 'Тандер',
+        thunderOption: cheapest.label,
+      });
+    }
+    
+    if (fastest && cheapest && fastest.label !== cheapest.label && fastest.days < (cheapest.days || 999)) {
+      const days = (fastest.days || 11) + 2;
+      results.push({
+        partNumber: oem || partNumber.toUpperCase(),
+        description: name || '',
+        brand: brand || '',
+        weight,
+        priceEUR: Math.round(fastest.price * 100) / 100,
+        calculatedPrice: Math.round(fastest.price * 100) / 100,
+        deliveryDays: `${days} дни`,
+        stock: 1, stockStatus: 'in_stock',
+        source: 'thunder', supplierName: 'Тандер (бърза)',
+        thunderOption: fastest.label,
+      });
+    }
+    
+    if (results.length === 0 && clientPrice > 0) {
+      const days = (bestDays || 15) + 2;
+      results.push({
+        partNumber: oem || partNumber.toUpperCase(),
+        description: name || '',
+        brand: brand || '',
+        weight,
+        priceEUR: Math.round(clientPrice * 100) / 100,
+        calculatedPrice: Math.round(clientPrice * 100) / 100,
+        deliveryDays: `${days} дни`,
+        stock: 1, stockStatus: 'in_stock',
+        source: 'thunder', supplierName: 'Тандер',
+      });
+    }
+    
+    return results;
   } catch (err) {
     console.warn('Thunder search error:', err.message);
     return [];
   }
-}
-
-// ============ ROTINGER (SOAP API) ============
-const ROTINGER_LOGIN = 'autofix_ws';
-const ROTINGER_PASSWORD = 'lnQZPr51';
-const ROTINGER_ENDPOINT = 'http://b2b.rotinger.pl/ProductWS/services/ProductServicePort';
-
-async function searchRotinger(partNumber) {
-  const startTime = Date.now();
-  const results = [];
-  
-  // Clean part number - remove spaces
-  const cleanPN = partNumber.replace(/\s+/g, '');
-  
-  // Build SOAP request with correct namespaces from WSDL
- const soapRequest = `<?xml version="1.0" encoding="UTF-8"?>
-<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
-  <soap:Body>
-    <priceRequest xmlns="http://ws.proacta.pl/">
-      <requestObject>
-        <login xmlns="http://cxfservice.proacta.pl/">${ROTINGER_LOGIN}</login>
-        <password xmlns="http://cxfservice.proacta.pl/">${ROTINGER_PASSWORD}</password>
-        <productQuery xmlns="http://cxfservice.proacta.pl/">
-          <quantity>1</quantity>
-          <rotingerId>${cleanPN}</rotingerId>
-        </productQuery>
-      </requestObject>
-    </priceRequest>
-  </soap:Body>
-</soap:Envelope>`;
-
-  try {
-    console.log(`Rotinger: searching for ${cleanPN}...`);
-    
-    const response = await fetch(ROTINGER_ENDPOINT, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'text/xml; charset=utf-8',
-        'SOAPAction': 'urn:GetProductBrief'
-      },
-      body: soapRequest
-    });
-    
-    const xmlText = await response.text();
-    console.log('Rotinger response status:', response.status);
-    console.log('Rotinger raw response:', xmlText.substring(0, 800));
-    
-    if (!response.ok) {
-      console.warn(`Rotinger API error: ${response.status}`);
-      return { results: [], elapsed: Date.now() - startTime, count: 0 };
-    }
-    
-    // Parse SOAP response - handle namespaced and non-namespaced tags
-    const priceMatch = xmlText.match(/<(?:ns\d*:)?price>([^<]+)<\/(?:ns\d*:)?price>/i);
-    const nameMatch = xmlText.match(/<(?:ns\d*:)?name>([^<]+)<\/(?:ns\d*:)?name>/i);
-    const descMatch = xmlText.match(/<(?:ns\d*:)?description>([^<]+)<\/(?:ns\d*:)?description>/i);
-    const availMatch = xmlText.match(/<(?:ns\d*:)?availability>([^<]+)<\/(?:ns\d*:)?availability>/i);
-    const currencyMatch = xmlText.match(/<(?:ns\d*:)?currency>([^<]+)<\/(?:ns\d*:)?currency>/i);
-    const rotingerIdMatch = xmlText.match(/<(?:ns\d*:)?rotingerId>([^<]+)<\/(?:ns\d*:)?rotingerId>/i);
-    
-    if (priceMatch) {
-      const basePrice = parseFloat(priceMatch[1]) || 0;
-      
-      // Apply Stefan's formula: (price + 10€)
-      const costPrice = basePrice + 10;
-      
-      // Determine delivery based on product code
-      // GL = 7-8 days, T1/T2/T3 etc = 10-12 days
-      let deliveryDays = '7-8 дни';
-      if (/T\d+$/i.test(cleanPN)) {
-        deliveryDays = '10-12 дни';
-      }
-      
-      // Check availability
-      const availability = availMatch ? availMatch[1] : '';
-      const inStock = availability.toLowerCase().includes('tak') || 
-                      availability.toLowerCase().includes('yes') ||
-                      parseInt(availability) > 0;
-      
-      results.push({
-        partNumber: rotingerIdMatch ? rotingerIdMatch[1] : cleanPN,
-        description: descMatch ? descMatch[1] : (nameMatch ? nameMatch[1] : 'Rotinger brake part'),
-        brand: 'ROTINGER',
-        priceEUR: costPrice,
-        calculatedPrice: costPrice,
-        originalPrice: basePrice,
-        stock: inStock ? 1 : 0,
-        stockStatus: inStock ? 'in_stock' : 'on_order',
-        deliveryDays: deliveryDays,
-        source: 'rotinger',
-        supplierName: 'Rotinger',
-        currency: currencyMatch ? currencyMatch[1] : 'EUR'
-      });
-      
-      console.log(`Rotinger: ${cleanPN} → ${basePrice}€ base, ${costPrice}€ cost, delivery: ${deliveryDays}`);
-    } else {
-      console.log(`Rotinger: no price found for ${cleanPN}`);
-    }
-    
-  } catch (error) {
-    console.warn('Rotinger search error:', error.message);
-  }
-  
-  return {
-    results,
-    elapsed: Date.now() - startTime,
-    count: results.length
-  };
 }
 
 // ============ UNIFIED SEARCH ENDPOINT ============
@@ -603,9 +550,6 @@ app.get('/api/supplier-search', async (req, res) => {
   
   const startTime = Date.now();
   
-  // Normalize searched part number for filtering
-  const searchedNormalized = q.replace(/[\s\-\.\/\\,;:_]+/g, '').toUpperCase();
-  
   try {
     // Get rates and APEC token in parallel
     const [rates, apecTok] = await Promise.all([
@@ -616,14 +560,13 @@ app.get('/api/supplier-search', async (req, res) => {
     const deliveryPoints = apecTok ? await getApecDeliveryPoints(apecTok) : [];
     const deliveryPointID = deliveryPoints?.[0]?.DeliveryPointID ?? 0;
     
-    // Search ALL suppliers in parallel (including Rotinger)
-    const [impexRaw, apecRaw, emexRaw, stimoRaw, thunderRaw, rotingerRaw] = await Promise.allSettled([
+    // Search ALL suppliers in parallel
+    const [impexRaw, apecRaw, emexRaw, stimoRaw, thunderRaw] = await Promise.allSettled([
       searchImpex(q),
       apecTok ? searchApec(q, apecTok, deliveryPointID) : [],
       searchEmex(q),
       searchStimo(q),
-      searchThunder(q),
-      searchRotinger(q)
+      searchThunder(q)
     ]);
     
     // Transform Impex results
@@ -680,34 +623,14 @@ app.get('/api/supplier-search', async (req, res) => {
       };
     });
     
-    // Transform Emex results - ONLY exact part number matches (no aftermarket/substitutes)
+    // Transform Emex results
     const emexRawItems = emexRaw.status === 'fulfilled' ? emexRaw.value : [];
-    
-    // Known aftermarket brands to exclude (they use OEM numbers but are not original)
-    // Include short codes like 'CT' for CTR
-    const aftermarketBrands = ['CTR', 'CT', '555', 'FEBEST', 'MASUMA', 'GMB', 'ASHIKA', 'NIPPARTS', 'JAPANPARTS', 'BLUE PRINT', 'OPTIMAL', 'MEYLE', 'LEMFORDER', 'MOOG', 'DELPHI', 'TRW', 'SIDEM', 'RTS', 'OCAP', 'BIRTH', 'FORMPART', 'MAPCO', 'FAG', 'SKF', 'SNR', 'NTN', 'KOYO', 'NSK', 'KAYABA', 'KYB', 'BILSTEIN', 'SACHS', 'MONROE', 'BOGE', 'KONI'];
-    
-    // Filter: ONLY exact part number matches AND exclude aftermarket brands
-    const emexFiltered = emexRawItems.filter(item => {
-      const itemNormalized = (item.number || '').replace(/[\s\-\.\/\\,;:_]+/g, '').toUpperCase();
-      // Check both make (short code) and makeName (full name)
-      const makeUpper = (item.make || '').toUpperCase();
-      const makeNameUpper = (item.makeName || '').toUpperCase();
-      const isAftermarket = aftermarketBrands.some(am => {
-        const amUpper = am.toUpperCase();
-        return makeUpper === amUpper || makeNameUpper === amUpper || makeNameUpper.includes(amUpper);
-      });
-      return itemNormalized === searchedNormalized && !isAftermarket;
-    });
-    
-    // Deduplicate: keep best price per make (same number, different suppliers)
     const emexBest = new Map();
-    for (const item of emexFiltered) {
-      const key = item.make || 'unknown';
+    for (const item of emexRawItems) {
+      const key = `${item.make}_${item.number}`;
       const existing = emexBest.get(key);
       if (!existing || item.price < existing.price) emexBest.set(key, item);
     }
-    
     const emexResults = [...emexBest.values()].map(item => {
       const priceUSD = item.price || 0;
       const weightKg = item.weight || 0.5;
@@ -758,7 +681,7 @@ app.get('/api/supplier-search', async (req, res) => {
       };
     });
     
-    // Transform Thunder results
+    // Transform Thunder results (already formatted from proxy)
     const thunderRawItems = thunderRaw.status === 'fulfilled' ? thunderRaw.value : [];
     const thunderResults = thunderRawItems.map(item => ({
       partNumber: item.partNumber,
@@ -771,19 +694,16 @@ app.get('/api/supplier-search', async (req, res) => {
       deliveryDays: item.deliveryDays || '15-20 дни',
       weight: item.weight || 0,
       source: 'thunder',
-      supplierName: 'Тандер'
+      supplierName: item.supplierName || 'Тандер',
+      thunderOption: item.thunderOption || ''
     }));
     
-    // Transform Rotinger results
-    const rotingerData = rotingerRaw.status === 'fulfilled' ? rotingerRaw.value : { results: [] };
-    const rotingerResults = rotingerData.results || [];
-    
     // Combine and sort
-    const allResults = [...impexResults, ...apecResults, ...emexResults, ...stimoResults, ...thunderResults, ...rotingerResults];
+    const allResults = [...impexResults, ...apecResults, ...emexResults, ...stimoResults, ...thunderResults];
     allResults.sort((a, b) => (a.calculatedPrice || 0) - (b.calculatedPrice || 0));
     
     const elapsed = Date.now() - startTime;
-    console.log(`✅ Search: ${q} → ${impexResults.length} Impex + ${apecResults.length} APEC + ${emexResults.length} Emex (filtered from ${emexRawItems.length}) + ${stimoResults.length} Stimo + ${thunderResults.length} Thunder + ${rotingerResults.length} Rotinger in ${elapsed}ms`);
+    console.log(`✅ Search: ${q} → ${impexResults.length} Impex + ${apecResults.length} APEC + ${emexResults.length} Emex + ${stimoResults.length} Stimo + ${thunderResults.length} Thunder in ${elapsed}ms`);
     
     res.json({
       success: true,
@@ -791,10 +711,8 @@ app.get('/api/supplier-search', async (req, res) => {
       impexCount: impexResults.length,
       apecCount: apecResults.length,
       emexCount: emexResults.length,
-      emexRawCount: emexRawItems.length,
       stimoCount: stimoResults.length,
       thunderCount: thunderResults.length,
-      rotingerCount: rotingerResults.length,
       totalCount: allResults.length,
       elapsed,
       rates,
