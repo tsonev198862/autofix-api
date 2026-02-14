@@ -746,167 +746,99 @@ app.listen(PORT, () => {
 });
 
 
-// ==============================================================
-// ECONT API ENDPOINTS - Add these to your Railway server.js
-// ==============================================================
-
-// Add at the top of server.js:
-// const ECONT_BASE_URL = process.env.ECONT_ENV === 'production' 
-//   ? 'https://ee.econt.com/services'
-//   : 'https://demo.econt.com/ee/services';
+// Replace ALL old econt endpoints with these in server.js
 
 // --- ECONT: Create/Calculate/Validate Label ---
 app.post('/api/econt/label', async (req, res) => {
   try {
     const { mode, shipment, credentials } = req.body;
-    // mode: 'calculate', 'validate', or 'create'
-    
-    if (!credentials?.username || !credentials?.password) {
-      return res.status(400).json({ error: 'Econt credentials required' });
-    }
-
-    const baseUrl = credentials.env === 'demo' 
-      ? 'https://demo.econt.com/ee/services'
-      : 'https://ee.econt.com/services';
-
+    if (!credentials?.username || !credentials?.password) return res.status(400).json({ error: 'Econt credentials required' });
+    const baseUrl = credentials.env === 'demo' ? 'https://demo.econt.com/ee/services' : 'https://ee.econt.com/services';
     const auth = Buffer.from(`${credentials.username}:${credentials.password}`).toString('base64');
-    
     const response = await fetch(`${baseUrl}/Shipments/LabelService.createLabel.json`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Basic ${auth}`
-      },
-      body: JSON.stringify({
-        label: shipment,
-        mode: mode || 'calculate'
-      })
+      method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': `Basic ${auth}` },
+      body: JSON.stringify({ label: shipment, mode: mode || 'calculate' })
     });
-
-    const data = await response.json();
-    res.json(data);
-  } catch (err) {
-    console.error('Econt label error:', err);
-    res.status(500).json({ error: err.message });
-  }
+    res.json(await response.json());
+  } catch (err) { console.error('Econt label error:', err); res.status(500).json({ error: err.message }); }
 });
 
-// --- ECONT: Get offices list ---
+// --- ECONT: Get offices (POST + GET) ---
+app.post('/api/econt/offices', async (req, res) => {
+  try {
+    const { username, password, env } = req.body;
+    const baseUrl = env === 'demo' ? 'https://demo.econt.com/ee/services' : 'https://ee.econt.com/services';
+    const auth = Buffer.from(`${username}:${password}`).toString('base64');
+    const response = await fetch(`${baseUrl}/Nomenclatures/NomenclaturesService.getOffices.json`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': `Basic ${auth}` },
+      body: JSON.stringify({ countryCode: 'BGR' })
+    });
+    res.json(await response.json());
+  } catch (err) { console.error('Econt offices error:', err); res.status(500).json({ error: err.message }); }
+});
 app.get('/api/econt/offices', async (req, res) => {
   try {
     const { username, password, env } = req.query;
-    
-    const baseUrl = env === 'demo'
-      ? 'https://demo.econt.com/ee/services'
-      : 'https://ee.econt.com/services';
-
+    const baseUrl = env === 'demo' ? 'https://demo.econt.com/ee/services' : 'https://ee.econt.com/services';
     const auth = Buffer.from(`${username}:${password}`).toString('base64');
-    
     const response = await fetch(`${baseUrl}/Nomenclatures/NomenclaturesService.getOffices.json`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Basic ${auth}`
-      },
-      body: JSON.stringify({
-        countryCode: 'BGR'
-      })
+      method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': `Basic ${auth}` },
+      body: JSON.stringify({ countryCode: 'BGR' })
     });
-
-    const data = await response.json();
-    res.json(data);
-  } catch (err) {
-    console.error('Econt offices error:', err);
-    res.status(500).json({ error: err.message });
-  }
+    res.json(await response.json());
+  } catch (err) { console.error('Econt offices error:', err); res.status(500).json({ error: err.message }); }
 });
 
-// --- ECONT: Get cities ---
+// --- ECONT: Get cities (POST + GET) ---
+app.post('/api/econt/cities', async (req, res) => {
+  try {
+    const { username, password, env } = req.body;
+    const baseUrl = env === 'demo' ? 'https://demo.econt.com/ee/services' : 'https://ee.econt.com/services';
+    const auth = Buffer.from(`${username}:${password}`).toString('base64');
+    const response = await fetch(`${baseUrl}/Nomenclatures/NomenclaturesService.getCities.json`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': `Basic ${auth}` },
+      body: JSON.stringify({ countryCode: 'BGR' })
+    });
+    res.json(await response.json());
+  } catch (err) { console.error('Econt cities error:', err); res.status(500).json({ error: err.message }); }
+});
 app.get('/api/econt/cities', async (req, res) => {
   try {
     const { username, password, env } = req.query;
-    
-    const baseUrl = env === 'demo'
-      ? 'https://demo.econt.com/ee/services'
-      : 'https://ee.econt.com/services';
-
+    const baseUrl = env === 'demo' ? 'https://demo.econt.com/ee/services' : 'https://ee.econt.com/services';
     const auth = Buffer.from(`${username}:${password}`).toString('base64');
-    
     const response = await fetch(`${baseUrl}/Nomenclatures/NomenclaturesService.getCities.json`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Basic ${auth}`
-      },
-      body: JSON.stringify({
-        countryCode: 'BGR'
-      })
+      method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': `Basic ${auth}` },
+      body: JSON.stringify({ countryCode: 'BGR' })
     });
-
-    const data = await response.json();
-    res.json(data);
-  } catch (err) {
-    console.error('Econt cities error:', err);
-    res.status(500).json({ error: err.message });
-  }
+    res.json(await response.json());
+  } catch (err) { console.error('Econt cities error:', err); res.status(500).json({ error: err.message }); }
 });
 
 // --- ECONT: Track shipment ---
 app.post('/api/econt/track', async (req, res) => {
   try {
     const { shipmentNumbers, credentials } = req.body;
-
-    const baseUrl = credentials.env === 'demo'
-      ? 'https://demo.econt.com/ee/services'
-      : 'https://ee.econt.com/services';
-
+    const baseUrl = credentials.env === 'demo' ? 'https://demo.econt.com/ee/services' : 'https://ee.econt.com/services';
     const auth = Buffer.from(`${credentials.username}:${credentials.password}`).toString('base64');
-    
     const response = await fetch(`${baseUrl}/Shipments/ShipmentService.getShipmentStatuses.json`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Basic ${auth}`
-      },
-      body: JSON.stringify({
-        shipmentNumbers: shipmentNumbers
-      })
+      method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': `Basic ${auth}` },
+      body: JSON.stringify({ shipmentNumbers })
     });
-
-    const data = await response.json();
-    res.json(data);
-  } catch (err) {
-    console.error('Econt track error:', err);
-    res.status(500).json({ error: err.message });
-  }
+    res.json(await response.json());
+  } catch (err) { console.error('Econt track error:', err); res.status(500).json({ error: err.message }); }
 });
 
 // --- ECONT: Delete label ---
 app.post('/api/econt/delete-label', async (req, res) => {
   try {
     const { shipmentNumber, credentials } = req.body;
-
-    const baseUrl = credentials.env === 'demo'
-      ? 'https://demo.econt.com/ee/services'
-      : 'https://ee.econt.com/services';
-
+    const baseUrl = credentials.env === 'demo' ? 'https://demo.econt.com/ee/services' : 'https://ee.econt.com/services';
     const auth = Buffer.from(`${credentials.username}:${credentials.password}`).toString('base64');
-    
     const response = await fetch(`${baseUrl}/Shipments/LabelService.deleteLabels.json`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Basic ${auth}`
-      },
-      body: JSON.stringify({
-        shipmentNumbers: [shipmentNumber]
-      })
+      method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': `Basic ${auth}` },
+      body: JSON.stringify({ shipmentNumbers: [shipmentNumber] })
     });
-
-    const data = await response.json();
-    res.json(data);
-  } catch (err) {
-    console.error('Econt delete error:', err);
-    res.status(500).json({ error: err.message });
-  }
+    res.json(await response.json());
+  } catch (err) { console.error('Econt delete error:', err); res.status(500).json({ error: err.message }); }
 });
