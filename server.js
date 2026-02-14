@@ -856,15 +856,15 @@ app.post('/api/econt/streets', async (req, res) => {
     res.json(await response.json());
   } catch (err) { console.error('Econt streets error:', err); res.status(500).json({ error: err.message }); }
 });
-// --- ECONT: Get Client Profiles (includes instruction templates) ---
+// --- ECONT: Get Client Profiles ---
 app.post('/api/econt/profiles', async (req, res) => {
   try {
     const { credentials } = req.body;
     if (!credentials?.username || !credentials?.password) return res.status(400).json({ error: 'Econt credentials required' });
     const baseUrl = credentials.env === 'demo' ? 'https://demo.econt.com/ee/services' : 'https://ee.econt.com/services';
-    const auth = Buffer.from(`${credentials.username}:${credentials.password}`).toString('base64');
-    const response = await fetch(`${baseUrl}/Profile/ProfileService.getClientProfiles.json`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': `Basic ${auth}` },
+    const auth = Buffer.from(credentials.username + ':' + credentials.password).toString('base64');
+    const response = await fetch(baseUrl + '/Profile/ProfileService.getClientProfiles.json', {
+      method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': 'Basic ' + auth },
       body: JSON.stringify({})
     });
     res.json(await response.json());
