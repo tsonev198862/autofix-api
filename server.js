@@ -842,3 +842,17 @@ app.post('/api/econt/delete-label', async (req, res) => {
     res.json(await response.json());
   } catch (err) { console.error('Econt delete error:', err); res.status(500).json({ error: err.message }); }
 });
+
+// --- ECONT: Get streets by city ---
+app.post('/api/econt/streets', async (req, res) => {
+  try {
+    const { username, password, env, cityName } = req.body;
+    const baseUrl = env === 'demo' ? 'https://demo.econt.com/ee/services' : 'https://ee.econt.com/services';
+    const auth = Buffer.from(`${username}:${password}`).toString('base64');
+    const response = await fetch(`${baseUrl}/Nomenclatures/NomenclaturesService.getStreets.json`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': `Basic ${auth}` },
+      body: JSON.stringify({ cityName: cityName })
+    });
+    res.json(await response.json());
+  } catch (err) { console.error('Econt streets error:', err); res.status(500).json({ error: err.message }); }
+});
