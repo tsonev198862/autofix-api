@@ -748,15 +748,17 @@ app.listen(PORT, () => {
 
 // Replace ALL old econt endpoints with these in server.js
 
+// ============ ECONT ENDPOINTS ============
+
 // --- ECONT: Create/Calculate/Validate Label ---
 app.post('/api/econt/label', async (req, res) => {
   try {
     const { mode, shipment, credentials } = req.body;
     if (!credentials?.username || !credentials?.password) return res.status(400).json({ error: 'Econt credentials required' });
     const baseUrl = credentials.env === 'demo' ? 'https://demo.econt.com/ee/services' : 'https://ee.econt.com/services';
-    const auth = Buffer.from(`${credentials.username}:${credentials.password}`).toString('base64');
-    const response = await fetch(`${baseUrl}/Shipments/LabelService.createLabel.json`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': `Basic ${auth}` },
+    const auth = Buffer.from(credentials.username + ':' + credentials.password).toString('base64');
+    const response = await fetch(baseUrl + '/Shipments/LabelService.createLabel.json', {
+      method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': 'Basic ' + auth },
       body: JSON.stringify({ label: shipment, mode: mode || 'calculate' })
     });
     res.json(await response.json());
@@ -768,9 +770,9 @@ app.post('/api/econt/offices', async (req, res) => {
   try {
     const { username, password, env } = req.body;
     const baseUrl = env === 'demo' ? 'https://demo.econt.com/ee/services' : 'https://ee.econt.com/services';
-    const auth = Buffer.from(`${username}:${password}`).toString('base64');
-    const response = await fetch(`${baseUrl}/Nomenclatures/NomenclaturesService.getOffices.json`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': `Basic ${auth}` },
+    const auth = Buffer.from(username + ':' + password).toString('base64');
+    const response = await fetch(baseUrl + '/Nomenclatures/NomenclaturesService.getOffices.json', {
+      method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': 'Basic ' + auth },
       body: JSON.stringify({ countryCode: 'BGR' })
     });
     res.json(await response.json());
@@ -780,9 +782,9 @@ app.get('/api/econt/offices', async (req, res) => {
   try {
     const { username, password, env } = req.query;
     const baseUrl = env === 'demo' ? 'https://demo.econt.com/ee/services' : 'https://ee.econt.com/services';
-    const auth = Buffer.from(`${username}:${password}`).toString('base64');
-    const response = await fetch(`${baseUrl}/Nomenclatures/NomenclaturesService.getOffices.json`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': `Basic ${auth}` },
+    const auth = Buffer.from(username + ':' + password).toString('base64');
+    const response = await fetch(baseUrl + '/Nomenclatures/NomenclaturesService.getOffices.json', {
+      method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': 'Basic ' + auth },
       body: JSON.stringify({ countryCode: 'BGR' })
     });
     res.json(await response.json());
@@ -794,9 +796,9 @@ app.post('/api/econt/cities', async (req, res) => {
   try {
     const { username, password, env } = req.body;
     const baseUrl = env === 'demo' ? 'https://demo.econt.com/ee/services' : 'https://ee.econt.com/services';
-    const auth = Buffer.from(`${username}:${password}`).toString('base64');
-    const response = await fetch(`${baseUrl}/Nomenclatures/NomenclaturesService.getCities.json`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': `Basic ${auth}` },
+    const auth = Buffer.from(username + ':' + password).toString('base64');
+    const response = await fetch(baseUrl + '/Nomenclatures/NomenclaturesService.getCities.json', {
+      method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': 'Basic ' + auth },
       body: JSON.stringify({ countryCode: 'BGR' })
     });
     res.json(await response.json());
@@ -806,9 +808,9 @@ app.get('/api/econt/cities', async (req, res) => {
   try {
     const { username, password, env } = req.query;
     const baseUrl = env === 'demo' ? 'https://demo.econt.com/ee/services' : 'https://ee.econt.com/services';
-    const auth = Buffer.from(`${username}:${password}`).toString('base64');
-    const response = await fetch(`${baseUrl}/Nomenclatures/NomenclaturesService.getCities.json`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': `Basic ${auth}` },
+    const auth = Buffer.from(username + ':' + password).toString('base64');
+    const response = await fetch(baseUrl + '/Nomenclatures/NomenclaturesService.getCities.json', {
+      method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': 'Basic ' + auth },
       body: JSON.stringify({ countryCode: 'BGR' })
     });
     res.json(await response.json());
@@ -820,10 +822,10 @@ app.post('/api/econt/track', async (req, res) => {
   try {
     const { shipmentNumbers, credentials } = req.body;
     const baseUrl = credentials.env === 'demo' ? 'https://demo.econt.com/ee/services' : 'https://ee.econt.com/services';
-    const auth = Buffer.from(`${credentials.username}:${credentials.password}`).toString('base64');
-    const response = await fetch(`${baseUrl}/Shipments/ShipmentService.getShipmentStatuses.json`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': `Basic ${auth}` },
-      body: JSON.stringify({ shipmentNumbers })
+    const auth = Buffer.from(credentials.username + ':' + credentials.password).toString('base64');
+    const response = await fetch(baseUrl + '/Shipments/ShipmentService.getShipmentStatuses.json', {
+      method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': 'Basic ' + auth },
+      body: JSON.stringify({ shipmentNumbers: shipmentNumbers })
     });
     res.json(await response.json());
   } catch (err) { console.error('Econt track error:', err); res.status(500).json({ error: err.message }); }
@@ -834,9 +836,9 @@ app.post('/api/econt/delete-label', async (req, res) => {
   try {
     const { shipmentNumber, credentials } = req.body;
     const baseUrl = credentials.env === 'demo' ? 'https://demo.econt.com/ee/services' : 'https://ee.econt.com/services';
-    const auth = Buffer.from(`${credentials.username}:${credentials.password}`).toString('base64');
-    const response = await fetch(`${baseUrl}/Shipments/LabelService.deleteLabels.json`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': `Basic ${auth}` },
+    const auth = Buffer.from(credentials.username + ':' + credentials.password).toString('base64');
+    const response = await fetch(baseUrl + '/Shipments/LabelService.deleteLabels.json', {
+      method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': 'Basic ' + auth },
       body: JSON.stringify({ shipmentNumbers: [shipmentNumber] })
     });
     res.json(await response.json());
@@ -848,14 +850,15 @@ app.post('/api/econt/streets', async (req, res) => {
   try {
     const { username, password, env, cityName } = req.body;
     const baseUrl = env === 'demo' ? 'https://demo.econt.com/ee/services' : 'https://ee.econt.com/services';
-    const auth = Buffer.from(`${username}:${password}`).toString('base64');
-    const response = await fetch(`${baseUrl}/Nomenclatures/NomenclaturesService.getStreets.json`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': `Basic ${auth}` },
+    const auth = Buffer.from(username + ':' + password).toString('base64');
+    const response = await fetch(baseUrl + '/Nomenclatures/NomenclaturesService.getStreets.json', {
+      method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': 'Basic ' + auth },
       body: JSON.stringify({ cityName: cityName })
     });
     res.json(await response.json());
   } catch (err) { console.error('Econt streets error:', err); res.status(500).json({ error: err.message }); }
 });
+
 // --- ECONT: Get Client Profiles ---
 app.post('/api/econt/profiles', async (req, res) => {
   try {
