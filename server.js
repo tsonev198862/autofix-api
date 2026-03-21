@@ -1109,3 +1109,20 @@ app.post('/api/autohelp-search', async (req, res) => {
 app.listen(PORT, () => {
   console.log(`🚀 AutoFix API running on port ${PORT}`);
 });
+
+
+app.get('/api/health', (req, res) => {
+  res.json({ 
+    status: 'ok', 
+    uptime: process.uptime(),
+    twocaptchaKeySet: !!process.env.TWOCAPTCHA_KEY,
+    twocaptchaKeyLen: (process.env.TWOCAPTCHA_KEY || '').length,
+    caches: {
+      rates: !!cachedRates,
+      apec: !!apecToken,
+      emex: !!emexCid,
+      stimo: !!stimoCookies,
+      thunder: !!thunderCookies
+    }
+  });
+});
