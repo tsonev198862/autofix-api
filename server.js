@@ -1111,3 +1111,15 @@ app.post('/api/autohelp-search', async (req, res) => {
 app.listen(PORT, () => {
   console.log(`🚀 AutoFix API running on port ${PORT}`);
 });
+
+app.get('/api/test-autohelp', async (req, res) => {
+  try {
+    const r = await fetch('https://eshop.autohelp.bg/Eshop/Login.aspx', {
+      headers: { 'User-Agent': 'Mozilla/5.0' },
+      signal: AbortSignal.timeout(10000)
+    });
+    res.json({ ok: true, status: r.status, len: (await r.text()).length });
+  } catch (err) {
+    res.json({ ok: false, error: err.message, code: err.cause?.code });
+  }
+});
