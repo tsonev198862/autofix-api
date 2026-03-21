@@ -740,10 +740,6 @@ app.get('/api/health', (req, res) => {
   });
 });
 
-// ============ START SERVER ============
-app.listen(PORT, () => {
-  console.log(`🚀 AutoFix API running on port ${PORT}`);
-});
 
 
 // Replace ALL old econt endpoints with these in server.js
