@@ -873,7 +873,9 @@ app.post('/api/econt/profiles', async (req, res) => {
     res.json(await response.json());
   } catch (err) { console.error('Econt profiles error:', err); res.status(500).json({ error: err.message }); }
 
-  app.listen(PORT, () => {
+  });
+
+// ============ START SERVER ============
+app.listen(PORT, () => {
   console.log(`🚀 AutoFix API running on port ${PORT}`);
-});
 });
