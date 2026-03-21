@@ -735,7 +735,7 @@ app.get('/api/health', (req, res) => {
       apec: !!apecToken,
       emex: !!emexCid,
       stimo: !!stimoCookies,
-      thunder: !!thunderCookies
+      thunder: !!thunderCookies,
       twocaptchaKeySet: !!process.env.TWOCAPTCHA_KEY,
     twocaptchaKeyLen: (process.env.TWOCAPTCHA_KEY || '').length,
     }
