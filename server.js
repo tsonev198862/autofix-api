@@ -736,6 +736,8 @@ app.get('/api/health', (req, res) => {
       emex: !!emexCid,
       stimo: !!stimoCookies,
       thunder: !!thunderCookies
+      twocaptchaKeySet: !!process.env.TWOCAPTCHA_KEY,
+    twocaptchaKeyLen: (process.env.TWOCAPTCHA_KEY || '').length,
     }
   });
 });
@@ -1108,21 +1110,4 @@ app.post('/api/autohelp-search', async (req, res) => {
 // ============ START SERVER ============
 app.listen(PORT, () => {
   console.log(`🚀 AutoFix API running on port ${PORT}`);
-});
-
-
-app.get('/api/health', (req, res) => {
-  res.json({ 
-    status: 'ok', 
-    uptime: process.uptime(),
-    twocaptchaKeySet: !!process.env.TWOCAPTCHA_KEY,
-    twocaptchaKeyLen: (process.env.TWOCAPTCHA_KEY || '').length,
-    caches: {
-      rates: !!cachedRates,
-      apec: !!apecToken,
-      emex: !!emexCid,
-      stimo: !!stimoCookies,
-      thunder: !!thunderCookies
-    }
-  });
 });
