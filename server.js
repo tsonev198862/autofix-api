@@ -320,23 +320,49 @@ function ahAbsoluteUrl(url) {
 }
 
 async function ahSolve2captcha(imageBase64, apiKey) {
-  const params = new URLSearchParams();
-  params.append('key', apiKey);
-  params.append('method', 'base64');
-  params.append('body', imageBase64);
-  params.append('phrase', '0');
-  params.append('case', '1');
-  params.append('numeric', '0');
-  params.append('min_len', '4');
-  params.append('max_len', '8');
-  const sub = await fetch('https://2captcha.com/in.php', { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: params.toString() });
+  // Use node-fetch with explicit multipart boundary to avoid encoding issues
+  const boundary = '----FormBoundary' + Math.random().toString(36).slice(2);
+  const body = [
+    `--${boundary}`,
+    'Content-Disposition: form-data; name="key"',
+    '', apiKey,
+    `--${boundary}`,
+    'Content-Disposition: form-data; name="method"',
+    '', 'base64',
+    `--${boundary}`,
+    'Content-Disposition: form-data; name="body"',
+    '', imageBase64,
+    `--${boundary}`,
+    'Content-Disposition: form-data; name="phrase"',
+    '', '0',
+    `--${boundary}`,
+    'Content-Disposition: form-data; name="case"',
+    '', '1',
+    `--${boundary}`,
+    'Content-Disposition: form-data; name="numeric"',
+    '', '0',
+    `--${boundary}`,
+    'Content-Disposition: form-data; name="min_len"',
+    '', '4',
+    `--${boundary}`,
+    'Content-Disposition: form-data; name="max_len"',
+    '', '8',
+    `--${boundary}--`,
+    ''
+  ].join('\r\n');
+
+  const sub = await nodeFetch('https://2captcha.com/in.php', {
+    method: 'POST',
+    headers: { 'Content-Type': `multipart/form-data; boundary=${boundary}` },
+    body
+  });
   const subText = await sub.text();
   console.log(`2captcha submit: "${subText}"`);
   if (!subText.startsWith('OK|')) throw new Error(`2captcha submit error: ${subText}`);
   const captchaId = subText.split('|')[1].trim();
   for (let i = 0; i < 12; i++) {
     await new Promise(r => setTimeout(r, 3000));
-    const poll = await fetch(`https://2captcha.com/res.php?key=${apiKey}&action=get&id=${captchaId}`);
+    const poll = await nodeFetch(`https://2captcha.com/res.php?key=${apiKey}&action=get&id=${captchaId}`);
     const pollText = await poll.text();
     if (pollText.startsWith('OK|')) return pollText.split('|')[1].trim();
     if (pollText !== 'CAPCHA_NOT_READY') throw new Error(`2captcha: ${pollText}`);
