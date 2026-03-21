@@ -523,11 +523,24 @@ app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', uptime: process.uptime(), twocaptchaKeySet: !!process.env.TWOCAPTCHA_KEY, twocaptchaKeyLen: (process.env.TWOCAPTCHA_KEY || '').length, caches: { rates: !!cachedRates, apec: !!apecToken, emex: !!emexCid, stimo: !!stimoCookies, thunder: !!thunderCookies, autohelp: !!ahSession.cookies } });
 });
 
-// ============ TEST ENDPOINT ============
+// ============ TEST ENDPOINTS ============
 app.get('/api/test-autohelp', async (req, res) => {
   try {
     const r = await fetch('https://eshop.autohelp.bg/Eshop/Login.aspx', { headers: { 'User-Agent': 'Mozilla/5.0' }, signal: AbortSignal.timeout(10000) });
     res.json({ ok: true, status: r.status, len: (await r.text()).length });
+  } catch (err) { res.json({ ok: false, error: err.message }); }
+});
+
+app.get('/api/test-2captcha', async (req, res) => {
+  const key = process.env.TWOCAPTCHA_KEY || '';
+  try {
+    // Test 1: Check balance
+    const balResp = await nodeFetch(`https://2captcha.com/res.php?key=${key}&action=getbalance`);
+    const balText = await balResp.text();
+    // Test 2: Check key validity
+    const checkResp = await nodeFetch(`https://2captcha.com/res.php?key=${key}&action=getbalance`);
+    const checkText = await checkResp.text();
+    res.json({ key: key.slice(0,8) + '...', keyLen: key.length, balanceCheck: checkText });
   } catch (err) { res.json({ ok: false, error: err.message }); }
 });
 
