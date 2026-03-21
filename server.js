@@ -320,16 +320,16 @@ function ahAbsoluteUrl(url) {
 }
 
 async function ahSolve2captcha(imageBase64, apiKey) {
-  const fd = new FormData();
-  fd.append('key', apiKey);
-  fd.append('method', 'base64');
-  fd.append('body', imageBase64);
-  fd.append('phrase', '0');
-  fd.append('case', '1');
-  fd.append('numeric', '0');
-  fd.append('min_len', '4');
-  fd.append('max_len', '8');
-  const sub = await fetch('https://2captcha.com/in.php', { method: 'POST', body: fd });
+  const params = new URLSearchParams();
+  params.append('key', apiKey);
+  params.append('method', 'base64');
+  params.append('body', imageBase64);
+  params.append('phrase', '0');
+  params.append('case', '1');
+  params.append('numeric', '0');
+  params.append('min_len', '4');
+  params.append('max_len', '8');
+  const sub = await fetch('https://2captcha.com/in.php', { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: params.toString() });
   const subText = await sub.text();
   console.log(`2captcha submit: "${subText}"`);
   if (!subText.startsWith('OK|')) throw new Error(`2captcha submit error: ${subText}`);
