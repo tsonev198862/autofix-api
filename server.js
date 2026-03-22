@@ -260,55 +260,23 @@ async function searchThunder(partNumber) {
   } catch (err) { console.warn('Thunder search error:', err.message); return []; }
 }
 
-// ============ AUTOHELP — fetch based (Railway) ============
+// ============ AUTOHELP — browserless.io ============
 const AH_BASE = 'https://eshop.autohelp.bg/Eshop';
 const AH_USER = process.env.AUTOHELP_USER || 'MM1441';
 const AH_PASS = process.env.AUTOHELP_PASS || 'MM1441';
 const AH_CAPTCHA_KEY = (process.env.TWOCAPTCHA_KEY || '').trim();
-const AH_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
 const AH_TTL = 25 * 60 * 1000;
+const BROWSERLESS_TOKEN = process.env.BROWSERLESS_TOKEN || '2UCIThQWi5cyPr9fe3531a6fcf4137dd7106559e0c3bff24b';
 
 let ahSession = { cookies: null, timestamp: 0 };
 
-function ahMergeCookies(resp, existing = {}) {
-  let cookieStrings = [];
-  try {
-    if (resp.headers.raw) cookieStrings = resp.headers.raw()['set-cookie'] || [];
-    else if (resp.headers.getSetCookie) cookieStrings = resp.headers.getSetCookie();
-    else { const raw = resp.headers.get('set-cookie'); if (raw) cookieStrings = raw.split(/,(?=[^ ])/); }
-  } catch (e) { const raw = resp.headers.get('set-cookie'); if (raw) cookieStrings = [raw]; }
-  const m = { ...existing };
-  for (const c of cookieStrings) { const [kv] = c.split(';'); const eq = kv.indexOf('='); if (eq > 0) m[kv.slice(0,eq).trim()] = kv.slice(eq+1).trim(); }
-  return m;
-}
-
-const ahCookieStr = j => Object.entries(j).map(([k,v]) => `${k}=${v}`).join('; ');
-
-function ahExtractAsp(html) {
-  const f = {};
-  for (const id of ['__VIEWSTATE','__VIEWSTATEGENERATOR','__EVENTVALIDATION','__LASTFOCUS']) {
-    const m = html.match(new RegExp(`id="${id}"[^>]*value="([^"]*)"`));
-    if (m) f[id] = m[1];
-  }
-  return f;
-}
-
 async function ahSolve2captcha(imageBase64) {
-  // Submit via URLSearchParams — most reliable for base64
   const params = new URLSearchParams({
-    key: AH_CAPTCHA_KEY,
-    method: 'base64',
-    body: imageBase64,
-    phrase: '0',
-    regsense: '1',
-    numeric: '0',
-    min_len: '4',
-    max_len: '8',
+    key: AH_CAPTCHA_KEY, method: 'base64', body: imageBase64,
+    phrase: '0', regsense: '1', numeric: '0', min_len: '4', max_len: '8',
   });
   const sub = await nodeFetch('https://2captcha.com/in.php', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: params.toString(),
+    method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: params.toString(),
   });
   const subText = await sub.text();
   console.log(`2captcha submit: "${subText}"`);
@@ -324,35 +292,73 @@ async function ahSolve2captcha(imageBase64) {
   throw new Error('2captcha timeout');
 }
 
+// Use browserless.io to run headless Chrome and get full rendered HTML
+async function browserlessGetPage(url, cookiesArray = []) {
+  const script = `
+    export default async function({ page }) {
+      ${cookiesArray.length > 0 ? `await page.setCookie(${JSON.stringify(cookiesArray)});` : ''}
+      await page.goto(${JSON.stringify(url)}, { waitUntil: 'networkidle2', timeout: 20000 });
+      await page.waitForTimeout(2000);
+      return { html: await page.content(), cookies: await page.cookies() };
+    }
+  `;
+  const resp = await nodeFetch(`https://production-sfo.browserless.io/function?token=${BROWSERLESS_TOKEN}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/javascript' },
+    body: script,
+  });
+  if (!resp.ok) throw new Error(`Browserless error: ${resp.status} ${await resp.text()}`);
+  return await resp.json();
+}
+
 async function ahLogin() {
   if (ahSession.cookies && Date.now() - ahSession.timestamp < AH_TTL) return ahSession.cookies;
 
+  // Step 1: Get login page via browserless to get real cookies + CAPTCHA
   const loginUrl = `${AH_BASE}/Login.aspx?cookieCheck=true`;
+  
+  // Use fetch for initial page + CAPTCHA (faster)
+  const AH_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
   const hdrs = { 'User-Agent': AH_UA, 'Accept': 'text/html,*/*;q=0.8', 'Accept-Language': 'bg-BG,bg;q=0.9' };
 
   for (let attempt = 1; attempt <= 3; attempt++) {
-    // GET login page fresh each attempt to avoid ViewState MAC issues
-    const r0 = await fetch(loginUrl, { headers: hdrs, redirect: 'follow' });
-    let jar = ahMergeCookies(r0);
-    const r1 = await fetch(`${AH_BASE}/Login.aspx`, { headers: { ...hdrs, Cookie: ahCookieStr(jar) }, redirect: 'follow' });
-    jar = ahMergeCookies(r1, jar);
+    const r0 = await nodeFetch(loginUrl, { headers: hdrs, redirect: 'follow' });
+    let jar = {};
+    for (const c of (r0.headers.raw()['set-cookie'] || [])) {
+      const [kv] = c.split(';'); const eq = kv.indexOf('=');
+      if (eq > 0) jar[kv.slice(0,eq).trim()] = kv.slice(eq+1).trim();
+    }
+    const r1 = await nodeFetch(`${AH_BASE}/Login.aspx`, { headers: { ...hdrs, Cookie: Object.entries(jar).map(([k,v])=>`${k}=${v}`).join('; ') }, redirect: 'follow' });
+    for (const c of (r1.headers.raw()['set-cookie'] || [])) {
+      const [kv] = c.split(';'); const eq = kv.indexOf('=');
+      if (eq > 0) jar[kv.slice(0,eq).trim()] = kv.slice(eq+1).trim();
+    }
     const html1 = await r1.text();
-    const asp = ahExtractAsp(html1);
-
-    // Find CAPTCHA
+    
+    // Extract ASP fields
+    const asp = {};
+    for (const id of ['__VIEWSTATE','__VIEWSTATEGENERATOR','__EVENTVALIDATION','__LASTFOCUS']) {
+      const m = html1.match(new RegExp(`id="${id}"[^>]*value="([^"]*)"`));
+      if (m) asp[id] = m[1];
+    }
+    
+    // Get CAPTCHA
     const captchaMatch = html1.match(/src="(AntiBotPicture\.ashx[^"]*)"/i);
-    if (!captchaMatch) return { error: 'CAPTCHA not found' };
+    if (!captchaMatch) { console.log('No CAPTCHA found'); continue; }
     const captchaUrl = `https://eshop.autohelp.bg/Eshop/${captchaMatch[1]}`;
-
-    const imgResp = await fetch(`${captchaUrl}&_t=${Date.now()}`, { headers: { ...hdrs, Cookie: ahCookieStr(jar), Referer: loginUrl } });
-    jar = ahMergeCookies(imgResp, jar);
+    const imgResp = await nodeFetch(`${captchaUrl}&_t=${Date.now()}`, { headers: { ...hdrs, Cookie: Object.entries(jar).map(([k,v])=>`${k}=${v}`).join('; '), Referer: loginUrl } });
+    for (const c of (imgResp.headers.raw()['set-cookie'] || [])) {
+      const [kv] = c.split(';'); const eq = kv.indexOf('=');
+      if (eq > 0) jar[kv.slice(0,eq).trim()] = kv.slice(eq+1).trim();
+    }
     const imgBuf = Buffer.from(await imgResp.arrayBuffer());
-    if (imgBuf.length < 100) continue;
-
+    if (imgBuf.length < 100) { console.log(`CAPTCHA too small: ${imgBuf.length}`); continue; }
+    
     let captchaText;
     try { captchaText = await ahSolve2captcha(imgBuf.toString('base64')); }
-    catch (e) { return { error: `2captcha failed: ${e.message}` }; }
+    catch (e) { return { error: `2captcha: ${e.message}` }; }
 
+    const cookieStr = Object.entries(jar).map(([k,v])=>`${k}=${v}`).join('; ');
     const loginBody = new URLSearchParams({
       __LASTFOCUS: asp.__LASTFOCUS || '', __EVENTTARGET: '', __EVENTARGUMENT: '',
       __VIEWSTATE: asp.__VIEWSTATE || '', __VIEWSTATEGENERATOR: asp.__VIEWSTATEGENERATOR || '',
@@ -364,12 +370,15 @@ async function ahLogin() {
       'ctl00$ContentPlaceHolder1$Login1$LoginButton.y': '12',
     });
 
-    const r2 = await fetch(loginUrl, {
+    const r2 = await nodeFetch(loginUrl, {
       method: 'POST',
-      headers: { ...hdrs, 'Content-Type': 'application/x-www-form-urlencoded', Cookie: ahCookieStr(jar), Referer: loginUrl, Origin: 'https://eshop.autohelp.bg' },
+      headers: { ...hdrs, 'Content-Type': 'application/x-www-form-urlencoded', Cookie: cookieStr, Referer: loginUrl, Origin: 'https://eshop.autohelp.bg' },
       body: loginBody.toString(), redirect: 'manual',
     });
-    jar = ahMergeCookies(r2, jar);
+    for (const c of (r2.headers.raw()['set-cookie'] || [])) {
+      const [kv] = c.split(';'); const eq = kv.indexOf('=');
+      if (eq > 0) jar[kv.slice(0,eq).trim()] = kv.slice(eq+1).trim();
+    }
     const loc = r2.headers.get('location') || '';
     const html2 = r2.status !== 302 ? await r2.text() : '';
     const ok = r2.status === 302 || loc.length > 0 || (html2.includes('Кошница') && !html2.includes('txtEnterPicLogin'));
@@ -377,10 +386,13 @@ async function ahLogin() {
     if (ok) {
       if (loc) {
         const redirUrl = loc.startsWith('http') ? loc : `https://eshop.autohelp.bg${loc}`;
-        const r3 = await fetch(redirUrl, { headers: { ...hdrs, Cookie: ahCookieStr(jar) } });
-        jar = ahMergeCookies(r3, jar);
+        const r3 = await nodeFetch(redirUrl, { headers: { ...hdrs, Cookie: Object.entries(jar).map(([k,v])=>`${k}=${v}`).join('; ') } });
+        for (const c of (r3.headers.raw()['set-cookie'] || [])) {
+          const [kv] = c.split(';'); const eq = kv.indexOf('=');
+          if (eq > 0) jar[kv.slice(0,eq).trim()] = kv.slice(eq+1).trim();
+        }
       }
-      console.log(`AutoHelp: ✅ login OK attempt ${attempt}`);
+      console.log(`AutoHelp: ✅ login OK attempt ${attempt}, cookies=${Object.keys(jar).join(',')}`);
       ahSession = { cookies: jar, timestamp: Date.now() };
       return jar;
     }
@@ -394,16 +406,25 @@ async function ahSearch(partNumber) {
   if (!jar || jar.error) return { results: [], error: jar?.error };
 
   const searchUrl = `${AH_BASE}/Products.aspx?MultiView=0&Category=${encodeURIComponent('в Артикул код')}&SearchString=${encodeURIComponent(partNumber)}`;
-  const r = await fetch(searchUrl, {
-    headers: { 'User-Agent': AH_UA, Cookie: ahCookieStr(jar), Referer: `${AH_BASE}/Products.aspx`, 'Accept-Language': 'bg-BG,bg;q=0.9' },
-    redirect: 'follow',
-  });
-  const html = await r.text();
-  console.log(`AutoHelp: search got ${html.length} bytes`);
+  
+  // Convert jar to browserless cookie format
+  const cookiesArray = Object.entries(jar).map(([name, value]) => ({
+    name, value, domain: 'eshop.autohelp.bg', path: '/'
+  }));
+
+  console.log(`AutoHelp: searching "${partNumber}" via browserless...`);
+  const { html, cookies: newCookies } = await browserlessGetPage(searchUrl, cookiesArray);
+  console.log(`AutoHelp: got ${html.length} bytes`);
+
+  // Update session with new cookies
+  if (newCookies && newCookies.length > 0) {
+    for (const c of newCookies) jar[c.name] = c.value;
+    ahSession = { cookies: jar, timestamp: ahSession.timestamp };
+  }
 
   if (html.includes('Login.aspx') || html.length < 10000) {
     ahSession = { cookies: null, timestamp: 0 };
-    return { results: [], error: 'Session expired' };
+    return { results: [], error: 'Session expired', htmlLen: html.length };
   }
 
   return { results: parseAhResults(html, partNumber), htmlLen: html.length };
@@ -411,41 +432,35 @@ async function ahSearch(partNumber) {
 
 function parseAhResults(html, query) {
   const results = [];
-  // Find product rows by id_hid markers
   const idMatches = [...html.matchAll(/id="id_hid(\d+)"[^>]*value="(\d+)"/gi)];
-
   if (idMatches.length > 0) {
     for (const m of idMatches) {
       const index = m[1], itemId = m[2];
       const idPos = html.indexOf(`id="id_hid${index}"`);
       const nextPos = html.indexOf(`id="id_hid${parseInt(index)+1}"`, idPos);
       const seg = nextPos > 0 ? html.slice(idPos, nextPos) : html.slice(idPos, idPos + 2000);
-      const priceMatch = seg.match(/(\d+[.,]\d{2})\s*(?:&euro;|€|EUR)/i)
-        || seg.match(/(\d+[.,]\d{2})\s*(?:лв)/i);
+      const priceMatch = seg.match(/(\d+[.,]\d{2})\s*(?:&euro;|€|EUR)/i) || seg.match(/(\d+[.,]\d{2})\s*(?:лв)/i);
       if (!priceMatch) continue;
       const price = parseFloat(priceMatch[1].replace(',', '.'));
       if (!price) continue;
       const codeMatch = seg.match(/>[A-Z]{1,5}\s*[A-Z0-9\-\.\/]{3,20}</i);
-      const descMatch = seg.match(/class="[^"]*[Dd]esc[^"]*"[^>]*>([^<]{3,80})</i)
-        || seg.match(/<td[^>]*>([А-Яа-яA-Za-z][^<]{5,60})<\/td>/);
+      const descMatch = seg.match(/class="[^"]*[Dd]esc[^"]*"[^>]*>([^<]{3,80})</i) || seg.match(/<td[^>]*>([А-Яа-яA-Za-z][^<]{5,60})<\/td>/);
       results.push({
-        partNumber: codeMatch ? codeMatch[0].replace(/[><]/g, '').trim() : query,
+        partNumber: codeMatch ? codeMatch[0].replace(/[><]/g,'').trim() : query,
         description: descMatch ? descMatch[1].trim() : '',
         price, currency: /лв/i.test(priceMatch[0]) ? 'BGN' : 'EUR',
         itemId, inStock: true, source: 'autohelp', supplierName: 'AutoHelp',
       });
     }
   } else {
-    // Fallback: parse table rows
     for (const row of html.matchAll(/<tr[^>]*>([\s\S]*?)<\/tr>/gi)) {
       const r = row[1];
       if (/<th/i.test(r)) continue;
-      const cells = [...r.matchAll(/<td[^>]*>([\s\S]*?)<\/td>/gi)]
-        .map(m => m[1].replace(/<[^>]+>/g, '').replace(/&nbsp;/g, ' ').trim()).filter(Boolean);
+      const cells = [...r.matchAll(/<td[^>]*>([\s\S]*?)<\/td>/gi)].map(m => m[1].replace(/<[^>]+>/g,'').replace(/&nbsp;/g,' ').trim()).filter(Boolean);
       if (cells.length < 3) continue;
       const priceCell = cells.find(c => /\d+[.,]\d{2}/.test(c) && c.length < 30);
       if (!priceCell) continue;
-      const price = parseFloat(priceCell.match(/(\d+[.,]\d{2})/)[1].replace(',', '.'));
+      const price = parseFloat(priceCell.match(/(\d+[.,]\d{2})/)[1].replace(',','.'));
       if (!price || price < 0.1) continue;
       const codeCell = cells.find(c => /^[A-Z0-9][\w\-\.\/]{3,24}$/i.test(c) && c !== priceCell);
       const descCell = cells.find(c => c !== priceCell && c !== codeCell && c.length > 3 && !/^\d+[.,]?\d*$/.test(c));
@@ -476,11 +491,17 @@ app.post('/api/autohelp-search', async (req, res) => {
     if (action === 'search') {
       if (!partNumber) return res.status(400).json({ ok: false, error: 'Липсва partNumber' });
       const { results, error, htmlLen } = await ahSearch(partNumber);
-      if (error) return res.status(401).json({ ok: false, error });
+      if (error) return res.status(500).json({ ok: false, error });
       return res.json({ ok: true, results, count: results.length, htmlLen });
     }
 
     if (action === 'debug_search') {
+      if (!partNumber) return res.status(400).json({ ok: false, error: 'Липсва partNumber' });
+      const { results, error, htmlLen } = await ahSearch(partNumber);
+      return res.json({ ok: true, results, count: results.length, htmlLen, error });
+    }
+
+    if (action === 'SKIP_OLD_debug_search') {
       if (!partNumber) return res.status(400).json({ ok: false, error: 'Липсва partNumber' });
       const page = await getAhPage();
       const searchUrl = `${AH_BASE}/Products.aspx?MultiView=0&Category=${encodeURIComponent('в Артикул код')}&SearchString=${encodeURIComponent(partNumber)}`;
