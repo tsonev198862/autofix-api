@@ -264,7 +264,7 @@ async function searchThunder(partNumber) {
 const AH_BASE = 'https://eshop.autohelp.bg/Eshop';
 const AH_USER = process.env.AUTOHELP_USER || 'MM1441';
 const AH_PASS = process.env.AUTOHELP_PASS || 'MM1441';
-const AH_CAPTCHA_KEY = process.env.TWOCAPTCHA_KEY || '';
+const AH_CAPTCHA_KEY = (process.env.TWOCAPTCHA_KEY || '').trim();
 
 let ahBrowser = null;
 let ahPage = null;
@@ -497,7 +497,7 @@ app.get('/api/supplier-search', async (req, res) => {
 
 // ============ HEALTH CHECK ============
 app.get('/api/health', (req, res) => {
-  res.json({ status: 'ok', uptime: process.uptime(), twocaptchaKeySet: !!process.env.TWOCAPTCHA_KEY, twocaptchaKeyLen: (process.env.TWOCAPTCHA_KEY || '').length, caches: { rates: !!cachedRates, apec: !!apecToken, emex: !!emexCid, stimo: !!stimoCookies, thunder: !!thunderCookies, autohelp: ahLoggedIn } });
+  res.json({ status: 'ok', uptime: process.uptime(), twocaptchaKeySet: !!process.env.TWOCAPTCHA_KEY, twocaptchaKeyLen: (process.env.TWOCAPTCHA_KEY || '').trim().length, caches: { rates: !!cachedRates, apec: !!apecToken, emex: !!emexCid, stimo: !!stimoCookies, thunder: !!thunderCookies, autohelp: ahLoggedIn } });
 });
 
 // ============ ECONT ENDPOINTS ============
