@@ -294,17 +294,22 @@ function ahExtractAsp(html) {
 }
 
 async function ahSolve2captcha(imageBase64) {
-  const boundary = '----AHBoundary' + Date.now();
-  const body = [
-    `--${boundary}`, 'Content-Disposition: form-data; name="key"', '', AH_CAPTCHA_KEY,
-    `--${boundary}`, 'Content-Disposition: form-data; name="method"', '', 'base64',
-    `--${boundary}`, 'Content-Disposition: form-data; name="body"', '', imageBase64,
-    `--${boundary}`, 'Content-Disposition: form-data; name="case"', '', '1',
-    `--${boundary}`, 'Content-Disposition: form-data; name="min_len"', '', '4',
-    `--${boundary}`, 'Content-Disposition: form-data; name="max_len"', '', '8',
-    `--${boundary}--`, ''
-  ].join('\r\n');
-  const sub = await nodeFetch('https://2captcha.com/in.php', { method: 'POST', headers: { 'Content-Type': `multipart/form-data; boundary=${boundary}` }, body });
+  // Submit via URLSearchParams — most reliable for base64
+  const params = new URLSearchParams({
+    key: AH_CAPTCHA_KEY,
+    method: 'base64',
+    body: imageBase64,
+    phrase: '0',
+    regsense: '1',
+    numeric: '0',
+    min_len: '4',
+    max_len: '8',
+  });
+  const sub = await nodeFetch('https://2captcha.com/in.php', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: params.toString(),
+  });
   const subText = await sub.text();
   console.log(`2captcha submit: "${subText}"`);
   if (!subText.startsWith('OK|')) throw new Error(`2captcha: ${subText}`);
