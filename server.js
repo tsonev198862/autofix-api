@@ -318,6 +318,28 @@ async function getAhPage() {
   if (ahBrowser) { try { await ahBrowser.close(); } catch {} ahBrowser = null; ahPage = null; }
 
   const { chromium } = require('playwright');
+
+// Anti-detection: inject stealth scripts
+async function applyStealthScripts(page) {
+  await page.addInitScript(() => {
+    // Override webdriver detection
+    Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+    // Override plugins
+    Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3] });
+    // Override languages
+    Object.defineProperty(navigator, 'languages', { get: () => ['bg-BG', 'bg', 'en-US', 'en'] });
+    // Override chrome
+    window.chrome = { runtime: {} };
+    // Override permissions
+    const originalQuery = window.navigator.permissions?.query;
+    if (originalQuery) {
+      window.navigator.permissions.query = (parameters) =>
+        parameters.name === 'notifications'
+          ? Promise.resolve({ state: Notification.permission })
+          : originalQuery(parameters);
+    }
+  });
+}
   ahBrowser = await chromium.launch({ headless: true, args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-http2'] });
   const ctx = await ahBrowser.newContext({
     userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36',
@@ -328,6 +350,7 @@ async function getAhPage() {
     },
   });
   ahPage = await ctx.newPage();
+  await applyStealthScripts(ahPage);
 
   console.log('AutoHelp: opening login page...');
   await ahPage.goto(`${AH_BASE}/Login.aspx?cookieCheck=true`, { waitUntil: 'domcontentloaded', timeout: 20000 });
@@ -501,15 +524,21 @@ app.post('/api/autohelp-search', async (req, res) => {
       const idHidAt = html.indexOf('id_hid');
       const rawIdHidAt = rawResponseBody.indexOf('id_hid');
 
+      // Get all cookies
+      const cookies = await page.context().cookies();
+      const cookieNames = cookies.map(c => c.name + '=' + c.value.slice(0,20));
+      const hasEshopCookie = cookies.some(c => c.name === 'eshop');
+
       return res.json({
         ok: true,
         playwrightHtmlLen: html.length,
         rawResponseLen: rawResponseBody.length,
         idHidInPlaywright: idHidAt > 0,
         idHidInRaw: rawIdHidAt > 0,
-        idHidArea: idHidAt > 0 ? html.slice(Math.max(0, idHidAt-100), idHidAt+500) : (rawIdHidAt > 0 ? rawResponseBody.slice(Math.max(0, rawIdHidAt-100), rawIdHidAt+500) : 'NOT FOUND'),
-        rawMiddle: rawResponseBody.slice(50000, 55000),
-        htmlMiddle: html.slice(Math.floor(html.length/2), Math.floor(html.length/2) + 3000),
+        hasEshopCookie,
+        cookieCount: cookies.length,
+        cookieNames,
+        htmlMiddle: html.slice(Math.floor(html.length/2), Math.floor(html.length/2) + 2000),
       });
     }
 
