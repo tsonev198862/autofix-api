@@ -1,5 +1,5 @@
 // AutoFix API Backend — Express Server for Railway
-// All suppliers in one place: Impex, APEC, Emex, Stimo, Thunder, AutoHelp
+// All suppliers: Impex, APEC, Emex, Stimo, Thunder, AutoHelp (Playwright)
 
 const express = require('express');
 const cors = require('cors');
@@ -31,7 +31,6 @@ async function getExchangeRates() {
     if (data.rates) {
       cachedRates = { jpyToEur: 1 / data.rates.JPY, usdToEur: 1 / data.rates.USD };
       ratesExpiry = Date.now() + 12 * 60 * 60 * 1000;
-      console.log('Exchange rates updated:', cachedRates);
       return cachedRates;
     }
   } catch (err) { console.warn('Exchange rate fetch failed:', err.message); }
@@ -141,7 +140,6 @@ async function stimoLogin() {
   const location = loginResp.headers.get('location');
   if (location) { const redirectUrl = location.startsWith('http') ? location : `${STIMO_BASE}/${location.replace(/^\//, '')}`; const redirectResp = await fetch(redirectUrl, { headers: { 'User-Agent': 'Mozilla/5.0', 'Cookie': cookies }, redirect: 'manual' }); cookies = mergeCookies(cookies, extractCookies(redirectResp.headers)); }
   stimoCookies = cookies; stimoLoginTime = Date.now();
-  console.log('Stimo: logged in');
   return cookies;
 }
 
@@ -196,9 +194,8 @@ function parseGwtResponse(text) {
 
 async function thunderLogin() {
   if (thunderCookies && thunderSessionExpiry && Date.now() < thunderSessionExpiry) return thunderCookies;
-  console.log('Thunder: logging in...');
   let cookies = '';
-  try { const r = await fetchThunder(THUNDER_BASE, { headers: { 'User-Agent': THUNDER_HEADERS['User-Agent'] } }); const setCookie = r.headers.get('set-cookie'); if (setCookie) cookies = setCookie.split(';')[0]; } catch (e) { console.log('Thunder homepage error:', e.message); }
+  try { const r = await fetchThunder(THUNDER_BASE, { headers: { 'User-Agent': THUNDER_HEADERS['User-Agent'] } }); const setCookie = r.headers.get('set-cookie'); if (setCookie) cookies = setCookie.split(';')[0]; } catch (e) {}
   const payload = `7|0|7|${THUNDER_MODULE}|${THUNDER_POL_LOGIN}|com.iisd.uiw.um.client.user.s.UserGWTWS|login|java.lang.String/2004016611|${THUNDER_USER}|${THUNDER_PASS}|1|2|3|4|2|5|5|6|7|`;
   const resp = await fetchThunder(THUNDER_GWT_USER, { method: 'POST', headers: { ...THUNDER_HEADERS, 'Cookie': cookies }, body: payload });
   const newCookies = resp.headers.get('set-cookie');
@@ -206,7 +203,6 @@ async function thunderLogin() {
   const body = await resp.text();
   if (!body.startsWith('//OK')) throw new Error('Thunder login failed');
   thunderCookies = cookies; thunderSessionExpiry = Date.now() + 30 * 60 * 1000;
-  console.log('Thunder: logged in OK');
   return cookies;
 }
 
@@ -264,91 +260,29 @@ async function searchThunder(partNumber) {
   } catch (err) { console.warn('Thunder search error:', err.message); return []; }
 }
 
-// ============ AUTOHELP / AUTOBUL ============
+// ============ AUTOHELP — Playwright ============
 const AH_BASE = 'https://eshop.autohelp.bg/Eshop';
-const AH_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
-let ahSession = { cookies: null, timestamp: 0 };
+const AH_USER = process.env.AUTOHELP_USER || 'MM1441';
+const AH_PASS = process.env.AUTOHELP_PASS || 'MM1441';
+const AH_CAPTCHA_KEY = process.env.TWOCAPTCHA_KEY || '';
+
+let ahBrowser = null;
+let ahPage = null;
+let ahLoggedIn = false;
+let ahLoginTime = 0;
 const AH_TTL = 25 * 60 * 1000;
 
-function ahMergeCookies(resp, existing = {}) {
-  let cookieStrings = [];
-  try {
-    if (resp.headers.raw) {
-      cookieStrings = resp.headers.raw()['set-cookie'] || [];
-    } else if (resp.headers.getSetCookie) {
-      cookieStrings = resp.headers.getSetCookie();
-    } else {
-      const raw = resp.headers.get('set-cookie');
-      if (raw) cookieStrings = raw.split(/,(?=[^ ])/);
-    }
-  } catch (e) {
-    const raw = resp.headers.get('set-cookie');
-    if (raw) cookieStrings = [raw];
-  }
-  const m = { ...existing };
-  for (const c of cookieStrings) {
-    const [kv] = c.split(';');
-    const eq = kv.indexOf('=');
-    if (eq > 0) m[kv.slice(0, eq).trim()] = kv.slice(eq + 1).trim();
-  }
-  return m;
-}
-
-const ahCookieStr = j => Object.entries(j).map(([k, v]) => `${k}=${v}`).join('; ');
-
-function ahExtractAsp(html) {
-  const f = {};
-  for (const id of ['__VIEWSTATE', '__VIEWSTATEGENERATOR', '__EVENTVALIDATION', '__LASTFOCUS']) {
-    const m = html.match(new RegExp(`id="${id}"[^>]*value="([^"]*)"`));
-    if (m) f[id] = m[1];
-  }
-  return f;
-}
-
-function ahFindCaptchaUrl(html) {
-  const m = html.match(/src="(AntiBotPicture\.ashx[^"]*)"/i)
-    || html.match(/src="([^"]*AntiBotPicture[^"]*)"/i)
-    || html.match(/src="([^"]*[Cc]aptcha[^"]*\.(?:ashx|aspx|png|gif)[^"]*)"/i);
-  return m ? m[1] : null;
-}
-
-function ahAbsoluteUrl(url) {
-  if (!url) return null;
-  if (url.startsWith('http')) return url;
-  if (url.startsWith('/')) return `https://eshop.autohelp.bg${url}`;
-  return `${AH_BASE}/${url}`;
-}
-
-async function ahSolve2captcha(imageBase64, apiKey) {
-  // Use node-fetch with explicit multipart boundary to avoid encoding issues
-  const boundary = '----FormBoundary' + Math.random().toString(36).slice(2);
+async function ahSolve2captcha(buffer) {
+  const base64 = buffer.toString('base64');
+  const boundary = '----AHBoundary' + Date.now();
   const body = [
-    `--${boundary}`,
-    'Content-Disposition: form-data; name="key"',
-    '', apiKey,
-    `--${boundary}`,
-    'Content-Disposition: form-data; name="method"',
-    '', 'base64',
-    `--${boundary}`,
-    'Content-Disposition: form-data; name="body"',
-    '', imageBase64,
-    `--${boundary}`,
-    'Content-Disposition: form-data; name="phrase"',
-    '', '0',
-    `--${boundary}`,
-    'Content-Disposition: form-data; name="case"',
-    '', '1',
-    `--${boundary}`,
-    'Content-Disposition: form-data; name="numeric"',
-    '', '0',
-    `--${boundary}`,
-    'Content-Disposition: form-data; name="min_len"',
-    '', '4',
-    `--${boundary}`,
-    'Content-Disposition: form-data; name="max_len"',
-    '', '8',
-    `--${boundary}--`,
-    ''
+    `--${boundary}`, 'Content-Disposition: form-data; name="key"', '', AH_CAPTCHA_KEY,
+    `--${boundary}`, 'Content-Disposition: form-data; name="method"', '', 'base64',
+    `--${boundary}`, 'Content-Disposition: form-data; name="body"', '', base64,
+    `--${boundary}`, 'Content-Disposition: form-data; name="case"', '', '1',
+    `--${boundary}`, 'Content-Disposition: form-data; name="min_len"', '', '4',
+    `--${boundary}`, 'Content-Disposition: form-data; name="max_len"', '', '8',
+    `--${boundary}--`, ''
   ].join('\r\n');
 
   const sub = await nodeFetch('https://2captcha.com/in.php', {
@@ -358,93 +292,181 @@ async function ahSolve2captcha(imageBase64, apiKey) {
   });
   const subText = await sub.text();
   console.log(`2captcha submit: "${subText}"`);
-  if (!subText.startsWith('OK|')) throw new Error(`2captcha submit error: ${subText}`);
-  const captchaId = subText.split('|')[1].trim();
+  if (!subText.startsWith('OK|')) throw new Error(`2captcha: ${subText}`);
+  const id = subText.split('|')[1].trim();
+
   for (let i = 0; i < 12; i++) {
     await new Promise(r => setTimeout(r, 3000));
-    const poll = await nodeFetch(`https://2captcha.com/res.php?key=${apiKey}&action=get&id=${captchaId}`);
-    const pollText = await poll.text();
-    if (pollText.startsWith('OK|')) return pollText.split('|')[1].trim();
-    if (pollText !== 'CAPCHA_NOT_READY') throw new Error(`2captcha: ${pollText}`);
+    const poll = await nodeFetch(`https://2captcha.com/res.php?key=${AH_CAPTCHA_KEY}&action=get&id=${id}`);
+    const text = await poll.text();
+    if (text.startsWith('OK|')) { console.log(`2captcha solved: "${text.split('|')[1]}"`); return text.split('|')[1].trim(); }
+    if (text !== 'CAPCHA_NOT_READY') throw new Error(`2captcha: ${text}`);
   }
   throw new Error('2captcha timeout');
 }
 
-async function ahLogin(user, pass, captchaKey) {
-  if (ahSession.cookies && Date.now() - ahSession.timestamp < AH_TTL) return ahSession.cookies;
-  const loginUrl = `${AH_BASE}/Login.aspx?cookieCheck=true`;
-  const hdrs = { 'User-Agent': AH_UA, 'Accept': 'text/html,*/*;q=0.8', 'Accept-Language': 'bg-BG,bg;q=0.9' };
-  const r0 = await fetch(loginUrl, { headers: hdrs, redirect: 'follow' });
-  let jar = ahMergeCookies(r0);
-  const r1 = await fetch(`${AH_BASE}/Login.aspx`, { headers: { ...hdrs, Cookie: ahCookieStr(jar) }, redirect: 'follow' });
-  jar = ahMergeCookies(r1, jar);
-  const html1 = await r1.text();
-  let asp = ahExtractAsp(html1);
-  const captchaRel = ahFindCaptchaUrl(html1);
-  if (!captchaRel) return { error: 'CAPTCHA image not found' };
-  const captchaUrl = ahAbsoluteUrl(captchaRel);
-  console.log(`AutoHelp: CAPTCHA = ${captchaUrl}`);
-  for (let attempt = 1; attempt <= 3; attempt++) {
-    const imgResp = await fetch(`${captchaUrl}&_t=${Date.now()}`, { headers: { ...hdrs, Cookie: ahCookieStr(jar), Referer: loginUrl } });
-    jar = ahMergeCookies(imgResp, jar);
-    const imgBuf = Buffer.from(await imgResp.arrayBuffer());
-    console.log(`AutoHelp: attempt ${attempt}, img size=${imgBuf.length}`);
-    if (imgBuf.length < 100) continue;
-    let captchaText;
-    try { captchaText = await ahSolve2captcha(imgBuf.toString('base64'), captchaKey); }
-    catch (e) { return { error: `2captcha failed: ${e.message}` }; }
-    console.log(`AutoHelp: CAPTCHA solved = "${captchaText}"`);
-    const body = new URLSearchParams({ __LASTFOCUS: asp.__LASTFOCUS || '', __EVENTTARGET: '', __EVENTARGUMENT: '', __VIEWSTATE: asp.__VIEWSTATE || '', __VIEWSTATEGENERATOR: asp.__VIEWSTATEGENERATOR || '', __EVENTVALIDATION: asp.__EVENTVALIDATION || '', 'ctl00$ContentPlaceHolder1$Login1$UserName': user, 'ctl00$ContentPlaceHolder1$Login1$Password': pass, 'ctl00$ContentPlaceHolder1$Login1$txtEnterPicLogin': captchaText, 'ctl00$ContentPlaceHolder1$Login1$LoginButton.x': '35', 'ctl00$ContentPlaceHolder1$Login1$LoginButton.y': '12' });
-    const r2 = await fetch(loginUrl, { method: 'POST', headers: { ...hdrs, 'Content-Type': 'application/x-www-form-urlencoded', Cookie: ahCookieStr(jar), Referer: loginUrl, Origin: 'https://eshop.autohelp.bg' }, body: body.toString(), redirect: 'manual' });
-    jar = ahMergeCookies(r2, jar);
-    const loc = r2.headers.get('location') || '';
-    const html2 = r2.status !== 302 ? await r2.text() : '';
-    const ok = r2.status === 302 || loc.length > 0 || (html2.includes('Кошница') && !html2.includes('txtEnterPicLogin'));
-    if (ok) {
-      if (loc) { const r3 = await fetch(ahAbsoluteUrl(loc), { headers: { ...hdrs, Cookie: ahCookieStr(jar) } }); jar = ahMergeCookies(r3, jar); }
-      console.log(`AutoHelp: ✅ login OK attempt ${attempt}`);
-      ahSession = { cookies: jar, timestamp: Date.now() };
-      return jar;
-    }
-    console.log(`AutoHelp: attempt ${attempt} failed status=${r2.status}`);
-    const rf = await fetch(loginUrl, { headers: { ...hdrs, Cookie: ahCookieStr(jar) } });
-    jar = ahMergeCookies(rf, jar);
-    asp = ahExtractAsp(await rf.text());
+async function getAhPage() {
+  if (ahPage && ahLoggedIn && Date.now() - ahLoginTime < AH_TTL) {
+    // Verify session still active
+    try {
+      const url = ahPage.url();
+      if (!url.includes('Login')) return ahPage;
+    } catch {}
   }
-  return { error: 'All 3 login attempts failed' };
+
+  // Close old browser
+  if (ahBrowser) { try { await ahBrowser.close(); } catch {} ahBrowser = null; ahPage = null; }
+
+  const { chromium } = require('playwright');
+  ahBrowser = await chromium.launch({ headless: true, args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'] });
+  const ctx = await ahBrowser.newContext({
+    userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+  });
+  ahPage = await ctx.newPage();
+
+  console.log('AutoHelp: opening login page...');
+  await ahPage.goto(`${AH_BASE}/Login.aspx?cookieCheck=true`, { waitUntil: 'domcontentloaded', timeout: 20000 });
+
+  // Find and screenshot CAPTCHA
+  const captchaImg = await ahPage.$('img[src*="AntiBotPicture"]');
+  if (!captchaImg) throw new Error('CAPTCHA image not found on page');
+  const imgBuffer = await captchaImg.screenshot();
+  console.log(`AutoHelp: CAPTCHA image captured, size=${imgBuffer.length}`);
+
+  const captchaText = await ahSolve2captcha(imgBuffer);
+
+  await ahPage.fill('input[name="ctl00$ContentPlaceHolder1$Login1$UserName"]', AH_USER);
+  await ahPage.fill('input[name="ctl00$ContentPlaceHolder1$Login1$Password"]', AH_PASS);
+  await ahPage.fill('input[name="ctl00$ContentPlaceHolder1$Login1$txtEnterPicLogin"]', captchaText);
+
+  await Promise.all([
+    ahPage.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 15000 }),
+    ahPage.click('input[name="ctl00$ContentPlaceHolder1$Login1$LoginButton"]')
+  ]);
+
+  const finalUrl = ahPage.url();
+  if (finalUrl.includes('Login')) {
+    ahLoggedIn = false;
+    throw new Error('Login failed — wrong CAPTCHA or credentials');
+  }
+
+  ahLoggedIn = true;
+  ahLoginTime = Date.now();
+  console.log(`AutoHelp: ✅ logged in, url=${finalUrl}`);
+  return ahPage;
 }
 
-async function ahSearch(partNumber, jar) {
-  const hdrs = { 'User-Agent': AH_UA, Cookie: ahCookieStr(jar), Referer: `${AH_BASE}/Products.aspx` };
-  for (const url of [`${AH_BASE}/Products.aspx?search=${encodeURIComponent(partNumber)}`, `${AH_BASE}/Products.aspx?SearchText=${encodeURIComponent(partNumber)}`]) {
-    const r = await fetch(url, { headers: hdrs, redirect: 'follow' });
-    const html = await r.text();
-    if (/лв|BGN|EUR|цена|Цена|price/i.test(html)) return { html, url: r.url };
-  }
-  return { html: '', url: '' };
+async function ahSearchPlaywright(partNumber) {
+  const page = await getAhPage();
+  const searchUrl = `${AH_BASE}/Products.aspx?MultiView=0&Category=${encodeURIComponent('в Артикул код')}&SearchString=${encodeURIComponent(partNumber)}`;
+
+  console.log(`AutoHelp: searching ${partNumber}...`);
+  await page.goto(searchUrl, { waitUntil: 'networkidle', timeout: 20000 });
+
+  // Wait for product grid to render
+  await page.waitForTimeout(2000);
+
+  const html = await page.content();
+  return parseAhResults(html, partNumber);
 }
 
-function ahParseResults(html, query) {
+function parseAhResults(html, query) {
   const results = [];
   const norm = s => s.replace(/[-\s]/g, '').toUpperCase();
-  for (const row of html.matchAll(/<tr[^>]*>([\s\S]*?)<\/tr>/gi)) {
-    const r = row[1];
-    if (/<th/i.test(r)) continue;
-    const cells = [...r.matchAll(/<td[^>]*>([\s\S]*?)<\/td>/gi)].map(m => m[1].replace(/<[^>]+>/g, '').replace(/&nbsp;/g, ' ').trim()).filter(Boolean);
-    if (cells.length < 2) continue;
-    const priceCell = cells.find(c => /\d+[.,]\d{2}/.test(c));
-    if (!priceCell) continue;
-    const priceMatch = priceCell.match(/(\d+[.,]\d{2})/);
+
+  // Find all hidden id fields — these mark product rows
+  const idMatches = [...html.matchAll(/id="id_hid(\d+)"[^>]*value="(\d+)"/gi)];
+
+  if (idMatches.length === 0) {
+    // Fallback: parse table rows
+    for (const row of html.matchAll(/<tr[^>]*>([\s\S]*?)<\/tr>/gi)) {
+      const r = row[1];
+      if (/<th/i.test(r)) continue;
+      const cells = [...r.matchAll(/<td[^>]*>([\s\S]*?)<\/td>/gi)]
+        .map(m => m[1].replace(/<[^>]+>/g, '').replace(/&nbsp;/g, ' ').trim()).filter(Boolean);
+      if (cells.length < 3) continue;
+      const priceCell = cells.find(c => /\d+[.,]\d{2}/.test(c) && c.length < 30);
+      if (!priceCell) continue;
+      const price = parseFloat(priceCell.match(/(\d+[.,]\d{2})/)[1].replace(',', '.'));
+      if (!price || price < 0.1) continue;
+      const codeCell = cells.find(c => /^[A-Z0-9][\w\-\.\/]{3,24}$/i.test(c) && c !== priceCell);
+      const descCell = cells.find(c => c !== priceCell && c !== codeCell && c.length > 3 && !/^\d+[.,]?\d*$/.test(c));
+      results.push({ partNumber: codeCell || query, description: descCell || '', price, currency: 'EUR', source: 'autohelp', supplierName: 'AutoHelp' });
+    }
+    return results;
+  }
+
+  // Use id_hid markers to find product data
+  for (const m of idMatches) {
+    const index = m[1];
+    const itemId = m[2];
+
+    // Find price near this index
+    const idPos = html.indexOf(`id="id_hid${index}"`);
+    const nextIdPos = html.indexOf(`id="id_hid${parseInt(index) + 1}"`, idPos);
+    const segment = nextIdPos > 0 ? html.slice(idPos, nextIdPos) : html.slice(idPos, idPos + 3000);
+
+    // Extract code
+    const codeMatch = segment.match(/>[A-Z]{1,5}\s*[A-Z0-9\-\.\/]{3,20}</i);
+    // Extract price EUR
+    const priceMatch = segment.match(/(\d+[.,]\d{2})\s*(?:&euro;|€|EUR|лв)/i);
     if (!priceMatch) continue;
     const price = parseFloat(priceMatch[1].replace(',', '.'));
     if (!price) continue;
-    const codeCell = cells.find(c => norm(c) === norm(query) || (c.length >= 4 && c.length <= 25 && /^[A-Z0-9][\w\-\.]+$/i.test(c)));
-    const descCell = cells.find(c => c !== priceCell && c !== codeCell && c.length > 4 && !/^\d+$/.test(c));
-    const idMatch = r.match(/(?:ProductId|product_id)=(\d+)/i) || r.match(/value="(\d{4,})"/);
-    results.push({ partNumber: codeCell || query, description: descCell || '', price, currency: /€|EUR/.test(priceCell) ? 'EUR' : 'BGN', inStock: /наличн|in.?stock/i.test(r), productId: idMatch ? idMatch[1] : '', source: 'autohelp', supplierName: 'AutoHelp' });
+
+    // Extract description
+    const descMatch = segment.match(/class="[^"]*[Dd]esc[^"]*"[^>]*>([^<]{3,80})</i)
+      || segment.match(/<td[^>]*>([А-Яа-яA-Za-z][^<]{5,60})<\/td>/);
+
+    results.push({
+      partNumber: codeMatch ? codeMatch[0].replace(/[><]/g, '').trim() : query,
+      description: descMatch ? descMatch[1].trim() : '',
+      price,
+      currency: /лв/i.test(priceMatch[0]) ? 'BGN' : 'EUR',
+      itemId,
+      inStock: true,
+      source: 'autohelp',
+      supplierName: 'AutoHelp',
+    });
   }
+
   return results;
 }
+
+// ============ AUTOHELP ENDPOINT ============
+app.post('/api/autohelp-search', async (req, res) => {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  const { action, partNumber } = req.body || {};
+
+  try {
+    if (action === 'session_status') {
+      return res.json({
+        active: ahLoggedIn && Date.now() - ahLoginTime < AH_TTL,
+        ageSeconds: ahLoggedIn ? Math.round((Date.now() - ahLoginTime) / 1000) : null,
+        expiresInSeconds: ahLoggedIn ? Math.max(0, Math.round((AH_TTL - (Date.now() - ahLoginTime)) / 1000)) : null,
+      });
+    }
+
+    if (action === 'login') {
+      ahLoggedIn = false;
+      if (ahBrowser) { try { await ahBrowser.close(); } catch {} ahBrowser = null; ahPage = null; }
+      await getAhPage();
+      return res.json({ ok: true, message: '✅ Логинът е успешен!' });
+    }
+
+    if (action === 'search') {
+      if (!partNumber) return res.status(400).json({ ok: false, error: 'Липсва partNumber' });
+      const results = await ahSearchPlaywright(partNumber);
+      return res.json({ ok: true, results, count: results.length });
+    }
+
+    return res.status(400).json({ error: 'Използвай: login, search, session_status' });
+  } catch (err) {
+    ahLoggedIn = false;
+    console.error('AutoHelp error:', err.message);
+    return res.status(500).json({ ok: false, error: err.message });
+  }
+});
 
 // ============ UNIFIED SEARCH ENDPOINT ============
 app.get('/api/supplier-search', async (req, res) => {
@@ -457,7 +479,7 @@ app.get('/api/supplier-search', async (req, res) => {
     const deliveryPointID = deliveryPoints?.[0]?.DeliveryPointID ?? 0;
     const [impexRaw, apecRaw, emexRaw, stimoRaw, thunderRaw] = await Promise.allSettled([searchImpex(q), apecTok ? searchApec(q, apecTok, deliveryPointID) : [], searchEmex(q), searchStimo(q), searchThunder(q)]);
     const impexResults = (impexRaw.status === 'fulfilled' ? impexRaw.value : []).map(part => { const priceJPY = part.price_yen || 0; const priceEUR = priceJPY * rates.jpyToEur; const deliveryPrice = priceEUR * 1.47; const brand = part.mark || ''; const rawPN = part.part || part.part_no_raw || ''; const formattedPN = ['HONDA','NISSAN','MITSUBISHI','SUBARU','TOYOTA'].includes(brand.toUpperCase()) ? rawPN.replace(/[\s\-\.\/\\,;:_]+/g, '').toUpperCase() : rawPN; return { partNumber: formattedPN, description: part.name_eng || part.name || '', originalPriceJPY: priceJPY, priceEUR: Math.round(priceEUR * 100) / 100, calculatedPrice: Math.round(deliveryPrice * 100) / 100, stock: part.is_discontinued ? 0 : 1, stockStatus: part.is_discontinued ? 'out_of_stock' : 'in_stock', brand, deliveryDays: '20-25 дни', weight: part.weight || 0, source: 'impex', supplierName: 'Impex Japan' }; });
-    const APEC_DUTY = 0.05, APEC_VAT = 0.20, APEC_SHIPPING_PER_KG = 6.50;
+    const APEC_DUTY = 0.05, APEC_SHIPPING_PER_KG = 6.50;
     const apecResults = (apecRaw.status === 'fulfilled' ? apecRaw.value : []).map(item => { const priceUSD = item.Price || 0; const weightKg = item.WeightPhysical || 0.5; const priceEUR = priceUSD * rates.usdToEur; const finalPrice = priceEUR * (1 + APEC_DUTY) + weightKg * APEC_SHIPPING_PER_KG; return { partNumber: item.PartNumber, description: item.PartDescription || 'Auto part', originalPriceUSD: priceUSD, priceEUR: Math.round(priceEUR * 100) / 100, calculatedPrice: Math.round(finalPrice * 100) / 100, shippingCost: Math.round(weightKg * APEC_SHIPPING_PER_KG * 100) / 100, stock: item.QtyInStock || item.Qty || 0, stockStatus: (item.QtyInStock || item.Qty || 0) > 0 ? 'in_stock' : 'on_order', brand: item.Brand, deliveryDays: `${(item.DeliveryDays || 30) + 10} дни`, weight: weightKg, source: 'apec', supplierName: 'APEC Dubai' }; });
     const emexRawItems = emexRaw.status === 'fulfilled' ? emexRaw.value : [];
     const emexBest = new Map();
@@ -468,173 +490,42 @@ app.get('/api/supplier-search', async (req, res) => {
     const allResults = [...impexResults, ...apecResults, ...emexResults, ...stimoResults, ...thunderResults];
     allResults.sort((a, b) => (a.calculatedPrice || 0) - (b.calculatedPrice || 0));
     const elapsed = Date.now() - startTime;
-    console.log(`✅ Search: ${q} → ${impexResults.length} Impex + ${apecResults.length} APEC + ${emexResults.length} Emex + ${stimoResults.length} Stimo + ${thunderResults.length} Thunder in ${elapsed}ms`);
     res.json({ success: true, query: q, impexCount: impexResults.length, apecCount: apecResults.length, emexCount: emexResults.length, stimoCount: stimoResults.length, thunderCount: thunderResults.length, totalCount: allResults.length, elapsed, rates, results: allResults.slice(0, 60) });
-  } catch (error) { console.error('Search error:', error); res.status(500).json({ error: 'Search failed', message: error.message }); }
-});
-
-// ============ AUTOHELP ENDPOINT ============
-app.post('/api/autohelp-search', async (req, res) => {
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  const { action, partNumber } = req.body || {};
-  const user = process.env.AUTOHELP_USER || 'MM1441';
-  const pass = process.env.AUTOHELP_PASS || 'MM1441';
-  const captchaKey = process.env.TWOCAPTCHA_KEY || '';
-  try {
-    if (action === 'session_status') {
-      const age = ahSession.cookies ? Math.round((Date.now() - ahSession.timestamp) / 1000) : null;
-      return res.json({ active: !!ahSession.cookies && Date.now() - ahSession.timestamp < AH_TTL, ageSeconds: age, expiresInSeconds: age !== null ? Math.max(0, Math.round(AH_TTL / 1000 - age)) : null });
-    }
-    if (action === 'login') {
-      if (!captchaKey) return res.status(400).json({ ok: false, error: 'Липсва TWOCAPTCHA_KEY env var' });
-      ahSession = { cookies: null, timestamp: 0 };
-      const result = await ahLogin(user, pass, captchaKey);
-      const ok = result && !result.error;
-      return res.json({ ok, message: ok ? '✅ Логинът е успешен!' : `❌ ${result?.error || 'Грешка'}` });
-    }
-    if (action === 'search') {
-      if (!captchaKey) return res.status(400).json({ ok: false, error: 'Липсва TWOCAPTCHA_KEY' });
-      const jarOrErr = await ahLogin(user, pass, captchaKey);
-      if (!jarOrErr || jarOrErr.error) return res.status(401).json({ ok: false, error: jarOrErr?.error || 'Неуспешен логин' });
-      const { html, url: finalUrl } = await ahSearch(partNumber, jarOrErr);
-      const results = ahParseResults(html, partNumber);
-      return res.json({ ok: true, results, count: results.length, finalUrl });
-    }
-    if (action === 'debug_search') {
-      if (!captchaKey) return res.status(400).json({ ok: false, error: 'Липсва TWOCAPTCHA_KEY' });
-      const jarOrErr = await ahLogin(user, pass, captchaKey);
-      if (!jarOrErr || jarOrErr.error) return res.status(401).json({ ok: false, error: jarOrErr?.error || 'Login failed' });
-      const hdrs = { 'User-Agent': AH_UA, Cookie: ahCookieStr(jarOrErr), Referer: `${AH_BASE}/Products.aspx` };
-      const debugResults = [];
-      for (const url of [`${AH_BASE}/Products.aspx?search=${encodeURIComponent(partNumber)}`, `${AH_BASE}/Products.aspx`]) {
-        const r = await fetch(url, { headers: hdrs, redirect: 'follow' });
-        const html = await r.text();
-        debugResults.push({ url, finalUrl: r.url, status: r.status, htmlLen: html.length, hasPrice: /лв|BGN|EUR|цена|price/i.test(html), allForms: [...html.matchAll(/<form[^>]*action="([^"]+)"/gi)].map(m => m[1]), snippet: html.slice(Math.floor(html.length * 0.35), Math.floor(html.length * 0.35) + 4000) });
-        if (debugResults[debugResults.length - 1].hasPrice) break;
-      }
-      return res.json({ ok: true, results: debugResults });
-    }
-    return res.status(400).json({ error: 'Използвай: login, search, session_status, debug_search' });
-  } catch (err) { console.error('AutoHelp error:', err); return res.status(500).json({ ok: false, error: err.message }); }
+  } catch (error) { res.status(500).json({ error: 'Search failed', message: error.message }); }
 });
 
 // ============ HEALTH CHECK ============
 app.get('/api/health', (req, res) => {
-  res.json({ status: 'ok', uptime: process.uptime(), twocaptchaKeySet: !!process.env.TWOCAPTCHA_KEY, twocaptchaKeyLen: (process.env.TWOCAPTCHA_KEY || '').length, caches: { rates: !!cachedRates, apec: !!apecToken, emex: !!emexCid, stimo: !!stimoCookies, thunder: !!thunderCookies, autohelp: !!ahSession.cookies } });
-});
-
-// ============ TEST ENDPOINTS ============
-app.get('/api/test-autohelp', async (req, res) => {
-  try {
-    const r = await fetch('https://eshop.autohelp.bg/Eshop/Login.aspx', { headers: { 'User-Agent': 'Mozilla/5.0' }, signal: AbortSignal.timeout(10000) });
-    res.json({ ok: true, status: r.status, len: (await r.text()).length });
-  } catch (err) { res.json({ ok: false, error: err.message }); }
-});
-
-app.get('/api/test-2captcha', async (req, res) => {
-  const key = process.env.TWOCAPTCHA_KEY || '';
-  try {
-    // Test 1: Check balance
-    const balResp = await nodeFetch(`https://2captcha.com/res.php?key=${key}&action=getbalance`);
-    const balText = await balResp.text();
-    // Test 2: Check key validity
-    const checkResp = await nodeFetch(`https://2captcha.com/res.php?key=${key}&action=getbalance`);
-    const checkText = await checkResp.text();
-    res.json({ key: key.slice(0,8) + '...', keyLen: key.length, balanceCheck: checkText });
-  } catch (err) { res.json({ ok: false, error: err.message }); }
+  res.json({ status: 'ok', uptime: process.uptime(), twocaptchaKeySet: !!process.env.TWOCAPTCHA_KEY, twocaptchaKeyLen: (process.env.TWOCAPTCHA_KEY || '').length, caches: { rates: !!cachedRates, apec: !!apecToken, emex: !!emexCid, stimo: !!stimoCookies, thunder: !!thunderCookies, autohelp: ahLoggedIn } });
 });
 
 // ============ ECONT ENDPOINTS ============
 app.post('/api/econt/label', async (req, res) => {
-  try {
-    const { mode, shipment, credentials } = req.body;
-    if (!credentials?.username || !credentials?.password) return res.status(400).json({ error: 'Econt credentials required' });
-    const baseUrl = credentials.env === 'demo' ? 'https://demo.econt.com/ee/services' : 'https://ee.econt.com/services';
-    const auth = Buffer.from(credentials.username + ':' + credentials.password).toString('base64');
-    const response = await fetch(baseUrl + '/Shipments/LabelService.createLabel.json', { method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': 'Basic ' + auth }, body: JSON.stringify({ label: shipment, mode: mode || 'calculate' }) });
-    res.json(await response.json());
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  try { const { mode, shipment, credentials } = req.body; if (!credentials?.username || !credentials?.password) return res.status(400).json({ error: 'Econt credentials required' }); const baseUrl = credentials.env === 'demo' ? 'https://demo.econt.com/ee/services' : 'https://ee.econt.com/services'; const auth = Buffer.from(credentials.username + ':' + credentials.password).toString('base64'); const response = await fetch(baseUrl + '/Shipments/LabelService.createLabel.json', { method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': 'Basic ' + auth }, body: JSON.stringify({ label: shipment, mode: mode || 'calculate' }) }); res.json(await response.json()); } catch (err) { res.status(500).json({ error: err.message }); }
 });
-
 app.post('/api/econt/offices', async (req, res) => {
-  try {
-    const { username, password, env } = req.body;
-    const baseUrl = env === 'demo' ? 'https://demo.econt.com/ee/services' : 'https://ee.econt.com/services';
-    const auth = Buffer.from(username + ':' + password).toString('base64');
-    const response = await fetch(baseUrl + '/Nomenclatures/NomenclaturesService.getOffices.json', { method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': 'Basic ' + auth }, body: JSON.stringify({ countryCode: 'BGR' }) });
-    res.json(await response.json());
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  try { const { username, password, env } = req.body; const baseUrl = env === 'demo' ? 'https://demo.econt.com/ee/services' : 'https://ee.econt.com/services'; const auth = Buffer.from(username + ':' + password).toString('base64'); const response = await fetch(baseUrl + '/Nomenclatures/NomenclaturesService.getOffices.json', { method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': 'Basic ' + auth }, body: JSON.stringify({ countryCode: 'BGR' }) }); res.json(await response.json()); } catch (err) { res.status(500).json({ error: err.message }); }
 });
-
 app.get('/api/econt/offices', async (req, res) => {
-  try {
-    const { username, password, env } = req.query;
-    const baseUrl = env === 'demo' ? 'https://demo.econt.com/ee/services' : 'https://ee.econt.com/services';
-    const auth = Buffer.from(username + ':' + password).toString('base64');
-    const response = await fetch(baseUrl + '/Nomenclatures/NomenclaturesService.getOffices.json', { method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': 'Basic ' + auth }, body: JSON.stringify({ countryCode: 'BGR' }) });
-    res.json(await response.json());
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  try { const { username, password, env } = req.query; const baseUrl = env === 'demo' ? 'https://demo.econt.com/ee/services' : 'https://ee.econt.com/services'; const auth = Buffer.from(username + ':' + password).toString('base64'); const response = await fetch(baseUrl + '/Nomenclatures/NomenclaturesService.getOffices.json', { method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': 'Basic ' + auth }, body: JSON.stringify({ countryCode: 'BGR' }) }); res.json(await response.json()); } catch (err) { res.status(500).json({ error: err.message }); }
 });
-
 app.post('/api/econt/cities', async (req, res) => {
-  try {
-    const { username, password, env } = req.body;
-    const baseUrl = env === 'demo' ? 'https://demo.econt.com/ee/services' : 'https://ee.econt.com/services';
-    const auth = Buffer.from(username + ':' + password).toString('base64');
-    const response = await fetch(baseUrl + '/Nomenclatures/NomenclaturesService.getCities.json', { method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': 'Basic ' + auth }, body: JSON.stringify({ countryCode: 'BGR' }) });
-    res.json(await response.json());
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  try { const { username, password, env } = req.body; const baseUrl = env === 'demo' ? 'https://demo.econt.com/ee/services' : 'https://ee.econt.com/services'; const auth = Buffer.from(username + ':' + password).toString('base64'); const response = await fetch(baseUrl + '/Nomenclatures/NomenclaturesService.getCities.json', { method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': 'Basic ' + auth }, body: JSON.stringify({ countryCode: 'BGR' }) }); res.json(await response.json()); } catch (err) { res.status(500).json({ error: err.message }); }
 });
-
 app.get('/api/econt/cities', async (req, res) => {
-  try {
-    const { username, password, env } = req.query;
-    const baseUrl = env === 'demo' ? 'https://demo.econt.com/ee/services' : 'https://ee.econt.com/services';
-    const auth = Buffer.from(username + ':' + password).toString('base64');
-    const response = await fetch(baseUrl + '/Nomenclatures/NomenclaturesService.getCities.json', { method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': 'Basic ' + auth }, body: JSON.stringify({ countryCode: 'BGR' }) });
-    res.json(await response.json());
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  try { const { username, password, env } = req.query; const baseUrl = env === 'demo' ? 'https://demo.econt.com/ee/services' : 'https://ee.econt.com/services'; const auth = Buffer.from(username + ':' + password).toString('base64'); const response = await fetch(baseUrl + '/Nomenclatures/NomenclaturesService.getCities.json', { method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': 'Basic ' + auth }, body: JSON.stringify({ countryCode: 'BGR' }) }); res.json(await response.json()); } catch (err) { res.status(500).json({ error: err.message }); }
 });
-
 app.post('/api/econt/track', async (req, res) => {
-  try {
-    const { shipmentNumbers, credentials } = req.body;
-    const baseUrl = credentials.env === 'demo' ? 'https://demo.econt.com/ee/services' : 'https://ee.econt.com/services';
-    const auth = Buffer.from(credentials.username + ':' + credentials.password).toString('base64');
-    const response = await fetch(baseUrl + '/Shipments/ShipmentService.getShipmentStatuses.json', { method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': 'Basic ' + auth }, body: JSON.stringify({ shipmentNumbers }) });
-    res.json(await response.json());
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  try { const { shipmentNumbers, credentials } = req.body; const baseUrl = credentials.env === 'demo' ? 'https://demo.econt.com/ee/services' : 'https://ee.econt.com/services'; const auth = Buffer.from(credentials.username + ':' + credentials.password).toString('base64'); const response = await fetch(baseUrl + '/Shipments/ShipmentService.getShipmentStatuses.json', { method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': 'Basic ' + auth }, body: JSON.stringify({ shipmentNumbers }) }); res.json(await response.json()); } catch (err) { res.status(500).json({ error: err.message }); }
 });
-
 app.post('/api/econt/delete-label', async (req, res) => {
-  try {
-    const { shipmentNumber, credentials } = req.body;
-    const baseUrl = credentials.env === 'demo' ? 'https://demo.econt.com/ee/services' : 'https://ee.econt.com/services';
-    const auth = Buffer.from(credentials.username + ':' + credentials.password).toString('base64');
-    const response = await fetch(baseUrl + '/Shipments/LabelService.deleteLabels.json', { method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': 'Basic ' + auth }, body: JSON.stringify({ shipmentNumbers: [shipmentNumber] }) });
-    res.json(await response.json());
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  try { const { shipmentNumber, credentials } = req.body; const baseUrl = credentials.env === 'demo' ? 'https://demo.econt.com/ee/services' : 'https://ee.econt.com/services'; const auth = Buffer.from(credentials.username + ':' + credentials.password).toString('base64'); const response = await fetch(baseUrl + '/Shipments/LabelService.deleteLabels.json', { method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': 'Basic ' + auth }, body: JSON.stringify({ shipmentNumbers: [shipmentNumber] }) }); res.json(await response.json()); } catch (err) { res.status(500).json({ error: err.message }); }
 });
-
 app.post('/api/econt/streets', async (req, res) => {
-  try {
-    const { username, password, env, cityName } = req.body;
-    const baseUrl = env === 'demo' ? 'https://demo.econt.com/ee/services' : 'https://ee.econt.com/services';
-    const auth = Buffer.from(username + ':' + password).toString('base64');
-    const response = await fetch(baseUrl + '/Nomenclatures/NomenclaturesService.getStreets.json', { method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': 'Basic ' + auth }, body: JSON.stringify({ cityName }) });
-    res.json(await response.json());
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  try { const { username, password, env, cityName } = req.body; const baseUrl = env === 'demo' ? 'https://demo.econt.com/ee/services' : 'https://ee.econt.com/services'; const auth = Buffer.from(username + ':' + password).toString('base64'); const response = await fetch(baseUrl + '/Nomenclatures/NomenclaturesService.getStreets.json', { method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': 'Basic ' + auth }, body: JSON.stringify({ cityName }) }); res.json(await response.json()); } catch (err) { res.status(500).json({ error: err.message }); }
 });
-
 app.post('/api/econt/profiles', async (req, res) => {
-  try {
-    const { credentials } = req.body;
-    if (!credentials?.username || !credentials?.password) return res.status(400).json({ error: 'Econt credentials required' });
-    const baseUrl = credentials.env === 'demo' ? 'https://demo.econt.com/ee/services' : 'https://ee.econt.com/services';
-    const auth = Buffer.from(credentials.username + ':' + credentials.password).toString('base64');
-    const response = await fetch(baseUrl + '/Profile/ProfileService.getClientProfiles.json', { method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': 'Basic ' + auth }, body: JSON.stringify({}) });
-    res.json(await response.json());
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  try { const { credentials } = req.body; if (!credentials?.username || !credentials?.password) return res.status(400).json({ error: 'Econt credentials required' }); const baseUrl = credentials.env === 'demo' ? 'https://demo.econt.com/ee/services' : 'https://ee.econt.com/services'; const auth = Buffer.from(credentials.username + ':' + credentials.password).toString('base64'); const response = await fetch(baseUrl + '/Profile/ProfileService.getClientProfiles.json', { method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': 'Basic ' + auth }, body: JSON.stringify({}) }); res.json(await response.json()); } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 // ============ START SERVER ============
