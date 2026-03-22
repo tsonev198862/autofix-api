@@ -362,11 +362,28 @@ async function ahSearchPlaywright(partNumber) {
   const searchUrl = `${AH_BASE}/Products.aspx?MultiView=0&Category=${encodeURIComponent('в Артикул код')}&SearchString=${encodeURIComponent(partNumber)}`;
 
   console.log(`AutoHelp: searching ${partNumber}...`);
-  await page.goto(searchUrl, { waitUntil: 'networkidle', timeout: 20000 });
+  await page.goto(searchUrl, { waitUntil: 'domcontentloaded', timeout: 20000 });
 
-  // Wait for product grid to render
-  await page.waitForTimeout(2000);
+  // Trigger PostBackOnMainPage which loads the product grid
+  try {
+    await page.waitForFunction(() => typeof PostBackOnMainPage !== 'undefined', { timeout: 5000 });
+    await page.evaluate(() => PostBackOnMainPage());
+  } catch (e) {
+    console.log('PostBackOnMainPage not found, trying click...');
+    try {
+      await page.click('#ctl00_btnSearchProducts', { timeout: 3000 });
+    } catch {}
+  }
 
+  // Wait for product rows to appear (id_hid elements)
+  try {
+    await page.waitForSelector('[id^="id_hid"]', { timeout: 8000 });
+    console.log('AutoHelp: product grid loaded');
+  } catch (e) {
+    console.log('AutoHelp: waiting for grid timed out, using current HTML');
+  }
+
+  await page.waitForTimeout(1000);
   const html = await page.content();
   return parseAhResults(html, partNumber);
 }
@@ -465,8 +482,15 @@ app.post('/api/autohelp-search', async (req, res) => {
       if (!partNumber) return res.status(400).json({ ok: false, error: 'Липсва partNumber' });
       const page = await getAhPage();
       const searchUrl = `${AH_BASE}/Products.aspx?MultiView=0&Category=${encodeURIComponent('в Артикул код')}&SearchString=${encodeURIComponent(partNumber)}`;
-      await page.goto(searchUrl, { waitUntil: 'networkidle', timeout: 20000 });
-      await page.waitForTimeout(2000);
+      await page.goto(searchUrl, { waitUntil: 'domcontentloaded', timeout: 20000 });
+      try {
+        await page.waitForFunction(() => typeof PostBackOnMainPage !== 'undefined', { timeout: 5000 });
+        await page.evaluate(() => PostBackOnMainPage());
+      } catch (e) {}
+      try {
+        await page.waitForSelector('[id^="id_hid"]', { timeout: 8000 });
+      } catch (e) {}
+      await page.waitForTimeout(1000);
       const html = await page.content();
       const idHidAt = html.indexOf('id_hid');
       const w712At = html.indexOf(partNumber.substring(0, 4));
