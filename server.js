@@ -610,6 +610,14 @@ app.post('/api/econt/profiles', async (req, res) => {
   try { const { credentials } = req.body; if (!credentials?.username || !credentials?.password) return res.status(400).json({ error: 'Econt credentials required' }); const baseUrl = credentials.env === 'demo' ? 'https://demo.econt.com/ee/services' : 'https://ee.econt.com/services'; const auth = Buffer.from(credentials.username + ':' + credentials.password).toString('base64'); const response = await fetch(baseUrl + '/Profile/ProfileService.getClientProfiles.json', { method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': 'Basic ' + auth }, body: JSON.stringify({}) }); res.json(await response.json()); } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// ============ TEST ENDPOINTS ============
+app.get('/api/test-autohelp', async (req, res) => {
+  try {
+    const r = await fetch('https://eshop.autohelp.bg/Eshop/Login.aspx', { headers: { 'User-Agent': 'Mozilla/5.0' }, signal: AbortSignal.timeout(10000) });
+    res.json({ ok: true, status: r.status, len: (await r.text()).length });
+  } catch (err) { res.json({ ok: false, error: err.message }); }
+});
+
 // ============ START SERVER ============
 app.listen(PORT, () => {
   console.log(`🚀 AutoFix API running on port ${PORT}`);
