@@ -520,8 +520,8 @@ app.post('/api/autohelp-search', async (req, res) => {
     return res.status(400).json({ error: 'Използвай: login, search, session_status' });
   } catch (err) {
     ahSession = { cookies: null, timestamp: 0 };
-    console.error('AutoHelp error:', err.message);
-    return res.status(500).json({ ok: false, error: err.message });
+    console.error('AutoHelp error:', err.message, err.cause?.message || '');
+    return res.status(500).json({ ok: false, error: err.message, cause: err.cause?.message });
   }
 });
 
