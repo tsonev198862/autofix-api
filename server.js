@@ -320,8 +320,12 @@ async function getAhPage() {
   const { chromium } = require('playwright');
   ahBrowser = await chromium.launch({ headless: true, args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-http2'] });
   const ctx = await ahBrowser.newContext({
-    userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36',
     ignoreHTTPSErrors: true,
+    extraHTTPHeaders: {
+      'Accept-Language': 'bg-BG,bg;q=0.9,en;q=0.8',
+      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+    },
   });
   ahPage = await ctx.newPage();
 
@@ -482,26 +486,30 @@ app.post('/api/autohelp-search', async (req, res) => {
       if (!partNumber) return res.status(400).json({ ok: false, error: 'Липсва partNumber' });
       const page = await getAhPage();
       const searchUrl = `${AH_BASE}/Products.aspx?MultiView=0&Category=${encodeURIComponent('в Артикул код')}&SearchString=${encodeURIComponent(partNumber)}`;
-      await page.goto(searchUrl, { waitUntil: 'domcontentloaded', timeout: 20000 });
-      try {
-        await page.waitForFunction(() => typeof PostBackOnMainPage !== 'undefined', { timeout: 5000 });
-        await page.evaluate(() => PostBackOnMainPage());
-      } catch (e) {}
-      try {
-        await page.waitForSelector('[id^="id_hid"]', { timeout: 8000 });
-      } catch (e) {}
-      await page.waitForTimeout(1000);
+      // Intercept response to get raw HTML
+      let rawResponseBody = '';
+      page.on('response', async response => {
+        if (response.url().includes('Products.aspx') && response.request().method() === 'GET') {
+          try { rawResponseBody = await response.text(); } catch {}
+        }
+      });
+
+      await page.goto(searchUrl, { waitUntil: 'load', timeout: 25000 });
+      await page.waitForTimeout(3000);
+
       const html = await page.content();
       const idHidAt = html.indexOf('id_hid');
-      const w712At = html.indexOf(partNumber.substring(0, 4));
+      const rawIdHidAt = rawResponseBody.indexOf('id_hid');
+
       return res.json({
         ok: true,
-        htmlLen: html.length,
-        idHidAt,
-        partNumberAt: w712At,
-        idHidArea: idHidAt > 0 ? html.slice(Math.max(0, idHidAt - 100), idHidAt + 500) : 'NOT FOUND',
-        partArea: w712At > 0 ? html.slice(Math.max(0, w712At - 200), w712At + 1000) : 'NOT FOUND',
-        middle: html.slice(Math.floor(html.length / 2) - 1000, Math.floor(html.length / 2) + 2000),
+        playwrightHtmlLen: html.length,
+        rawResponseLen: rawResponseBody.length,
+        idHidInPlaywright: idHidAt > 0,
+        idHidInRaw: rawIdHidAt > 0,
+        idHidArea: idHidAt > 0 ? html.slice(Math.max(0, idHidAt-100), idHidAt+500) : (rawIdHidAt > 0 ? rawResponseBody.slice(Math.max(0, rawIdHidAt-100), rawIdHidAt+500) : 'NOT FOUND'),
+        rawMiddle: rawResponseBody.slice(50000, 55000),
+        htmlMiddle: html.slice(Math.floor(html.length/2), Math.floor(html.length/2) + 3000),
       });
     }
 
