@@ -514,7 +514,7 @@ app.post('/api/autohelp-search', async (req, res) => {
 
     return res.status(400).json({ error: 'Използвай: login, search, session_status' });
   } catch (err) {
-    ahLoggedIn = false;
+    ahSession = { cookies: null, timestamp: 0 };
     console.error('AutoHelp error:', err.message);
     return res.status(500).json({ ok: false, error: err.message });
   }
@@ -548,7 +548,7 @@ app.get('/api/supplier-search', async (req, res) => {
 
 // ============ HEALTH CHECK ============
 app.get('/api/health', (req, res) => {
-  res.json({ status: 'ok', uptime: process.uptime(), twocaptchaKeySet: !!process.env.TWOCAPTCHA_KEY, twocaptchaKeyLen: (process.env.TWOCAPTCHA_KEY || '').trim().length, caches: { rates: !!cachedRates, apec: !!apecToken, emex: !!emexCid, stimo: !!stimoCookies, thunder: !!thunderCookies, autohelp: ahLoggedIn } });
+  res.json({ status: 'ok', uptime: process.uptime(), twocaptchaKeySet: !!process.env.TWOCAPTCHA_KEY, twocaptchaKeyLen: (process.env.TWOCAPTCHA_KEY || '').trim().length, caches: { rates: !!cachedRates, apec: !!apecToken, emex: !!emexCid, stimo: !!stimoCookies, thunder: !!thunderCookies, autohelp: !!ahSession.cookies } });
 });
 
 // ============ ECONT ENDPOINTS ============
