@@ -352,27 +352,92 @@ async function applyStealthScripts(page) {
   ahPage = await ctx.newPage();
   await applyStealthScripts(ahPage);
 
-  console.log('AutoHelp: opening login page...');
-  await ahPage.goto(`${AH_BASE}/Login.aspx?cookieCheck=true`, { waitUntil: 'domcontentloaded', timeout: 20000 });
+  console.log('AutoHelp: fetching login page for CAPTCHA...');
+  // Use fetch to get the login page HTML and CAPTCHA
+  const loginUrl = `${AH_BASE}/Login.aspx?cookieCheck=true`;
+  const baseHdrs = { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36', 'Accept': 'text/html,*/*;q=0.8', 'Accept-Language': 'bg-BG,bg;q=0.9' };
 
-  // Find and screenshot CAPTCHA
-  const captchaImg = await ahPage.$('img[src*="AntiBotPicture"]');
-  if (!captchaImg) throw new Error('CAPTCHA image not found on page');
-  const imgBuffer = await captchaImg.screenshot();
-  console.log(`AutoHelp: CAPTCHA image captured, size=${imgBuffer.length}`);
+  // GET login page via fetch to get cookies + ViewState
+  const r0 = await fetch(loginUrl, { headers: baseHdrs, redirect: 'follow' });
+  let fetchCookies = {};
+  for (const c of (r0.headers.raw ? r0.headers.raw()['set-cookie'] || [] : [])) {
+    const [kv] = c.split(';'); const eq = kv.indexOf('=');
+    if (eq > 0) fetchCookies[kv.slice(0,eq).trim()] = kv.slice(eq+1).trim();
+  }
+  const r1 = await fetch(`${AH_BASE}/Login.aspx`, { headers: { ...baseHdrs, Cookie: Object.entries(fetchCookies).map(([k,v])=>`${k}=${v}`).join('; ') }, redirect: 'follow' });
+  for (const c of (r1.headers.raw ? r1.headers.raw()['set-cookie'] || [] : [])) {
+    const [kv] = c.split(';'); const eq = kv.indexOf('=');
+    if (eq > 0) fetchCookies[kv.slice(0,eq).trim()] = kv.slice(eq+1).trim();
+  }
+  const html1 = await r1.text();
+
+  // Extract ViewState
+  const aspFields = {};
+  for (const id of ['__VIEWSTATE','__VIEWSTATEGENERATOR','__EVENTVALIDATION','__LASTFOCUS']) {
+    const m = html1.match(new RegExp(`id="${id}"[^>]*value="([^"]*)"`));
+    if (m) aspFields[id] = m[1];
+  }
+
+  // Find CAPTCHA URL
+  const captchaMatch = html1.match(/src="(AntiBotPicture\.ashx[^"]*)"/i);
+  if (!captchaMatch) throw new Error('CAPTCHA not found in login page');
+  const captchaUrl = `https://eshop.autohelp.bg/Eshop/${captchaMatch[1]}`;
+
+  // Download CAPTCHA via fetch
+  const imgResp = await fetch(captchaUrl, { headers: { ...baseHdrs, Cookie: Object.entries(fetchCookies).map(([k,v])=>`${k}=${v}`).join('; ') } });
+  for (const c of (imgResp.headers.raw ? imgResp.headers.raw()['set-cookie'] || [] : [])) {
+    const [kv] = c.split(';'); const eq = kv.indexOf('=');
+    if (eq > 0) fetchCookies[kv.slice(0,eq).trim()] = kv.slice(eq+1).trim();
+  }
+  const imgBuffer = Buffer.from(await imgResp.arrayBuffer());
+  console.log(`AutoHelp: CAPTCHA fetched, size=${imgBuffer.length}`);
 
   const captchaText = await ahSolve2captcha(imgBuffer);
+  console.log(`AutoHelp: CAPTCHA solved = "${captchaText}"`);
 
-  await ahPage.fill('input[name="ctl00$ContentPlaceHolder1$Login1$UserName"]', AH_USER);
-  await ahPage.fill('input[name="ctl00$ContentPlaceHolder1$Login1$Password"]', AH_PASS);
-  await ahPage.fill('input[name="ctl00$ContentPlaceHolder1$Login1$txtEnterPicLogin"]', captchaText);
+  // POST login via fetch
+  const cookieString = Object.entries(fetchCookies).map(([k,v])=>`${k}=${v}`).join('; ');
+  const loginBody = new URLSearchParams({
+    __LASTFOCUS: aspFields.__LASTFOCUS || '',
+    __EVENTTARGET: '', __EVENTARGUMENT: '',
+    __VIEWSTATE: aspFields.__VIEWSTATE || '',
+    __VIEWSTATEGENERATOR: aspFields.__VIEWSTATEGENERATOR || '',
+    __EVENTVALIDATION: aspFields.__EVENTVALIDATION || '',
+    'ctl00$ContentPlaceHolder1$Login1$UserName': AH_USER,
+    'ctl00$ContentPlaceHolder1$Login1$Password': AH_PASS,
+    'ctl00$ContentPlaceHolder1$Login1$txtEnterPicLogin': captchaText,
+    'ctl00$ContentPlaceHolder1$Login1$LoginButton.x': '35',
+    'ctl00$ContentPlaceHolder1$Login1$LoginButton.y': '12',
+  });
 
-  await Promise.all([
-    ahPage.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 15000 }),
-    ahPage.click('input[name="ctl00$ContentPlaceHolder1$Login1$LoginButton"]')
-  ]);
+  const r2 = await fetch(loginUrl, {
+    method: 'POST',
+    headers: { ...baseHdrs, 'Content-Type': 'application/x-www-form-urlencoded', Cookie: cookieString, Referer: loginUrl, Origin: 'https://eshop.autohelp.bg' },
+    body: loginBody.toString(),
+    redirect: 'manual',
+  });
+  for (const c of (r2.headers.raw ? r2.headers.raw()['set-cookie'] || [] : [])) {
+    const [kv] = c.split(';'); const eq = kv.indexOf('=');
+    if (eq > 0) fetchCookies[kv.slice(0,eq).trim()] = kv.slice(eq+1).trim();
+  }
+  const loc = r2.headers.get('location') || '';
+  if (r2.status !== 302 && !loc) throw new Error(`Login POST failed: status=${r2.status}`);
 
-  const finalUrl = ahPage.url();
+  // Follow redirect
+  if (loc) {
+    const redirUrl = loc.startsWith('http') ? loc : `https://eshop.autohelp.bg${loc}`;
+    const r3 = await fetch(redirUrl, { headers: { ...baseHdrs, Cookie: Object.entries(fetchCookies).map(([k,v])=>`${k}=${v}`).join('; ') } });
+    for (const c of (r3.headers.raw ? r3.headers.raw()['set-cookie'] || [] : [])) {
+      const [kv] = c.split(';'); const eq = kv.indexOf('=');
+      if (eq > 0) fetchCookies[kv.slice(0,eq).trim()] = kv.slice(eq+1).trim();
+    }
+  }
+
+  // Store cookies in Playwright context for consistency
+  const cookiesArray = Object.entries(fetchCookies).map(([name, value]) => ({ name, value, domain: 'eshop.autohelp.bg', path: '/' }));
+  await ahPage.context().addCookies(cookiesArray);
+
+  const finalUrl = loc || 'logged-in';
   if (finalUrl.includes('Login')) {
     ahLoggedIn = false;
     throw new Error('Login failed — wrong CAPTCHA or credentials');
@@ -385,33 +450,37 @@ async function applyStealthScripts(page) {
 }
 
 async function ahSearchPlaywright(partNumber) {
+  // Get session cookies from Playwright
   const page = await getAhPage();
+  const cookies = await page.context().cookies();
+  const cookieStr = cookies.map(c => `${c.name}=${c.value}`).join('; ');
+
+  // Use fetch with Playwright cookies — Railway can reach the site fine
   const searchUrl = `${AH_BASE}/Products.aspx?MultiView=0&Category=${encodeURIComponent('в Артикул код')}&SearchString=${encodeURIComponent(partNumber)}`;
 
-  console.log(`AutoHelp: searching ${partNumber}...`);
-  await page.goto(searchUrl, { waitUntil: 'domcontentloaded', timeout: 20000 });
+  console.log(`AutoHelp: searching ${partNumber} via fetch with ${cookies.length} cookies...`);
+  const r = await fetch(searchUrl, {
+    headers: {
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36',
+      'Cookie': cookieStr,
+      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+      'Accept-Language': 'bg-BG,bg;q=0.9,en;q=0.8',
+      'Referer': `${AH_BASE}/Products.aspx`,
+    },
+    redirect: 'follow',
+  });
 
-  // Trigger PostBackOnMainPage which loads the product grid
-  try {
-    await page.waitForFunction(() => typeof PostBackOnMainPage !== 'undefined', { timeout: 5000 });
-    await page.evaluate(() => PostBackOnMainPage());
-  } catch (e) {
-    console.log('PostBackOnMainPage not found, trying click...');
-    try {
-      await page.click('#ctl00_btnSearchProducts', { timeout: 3000 });
-    } catch {}
+  const html = await r.text();
+  console.log(`AutoHelp: got ${html.length} bytes`);
+
+  // If session expired, clear and retry once
+  if (html.includes('Login.aspx') || html.includes('txtEnterPicLogin')) {
+    console.log('AutoHelp: session expired, re-logging...');
+    ahLoggedIn = false;
+    if (ahBrowser) { try { await ahBrowser.close(); } catch {} ahBrowser = null; ahPage = null; }
+    return ahSearchPlaywright(partNumber);
   }
 
-  // Wait for product rows to appear (id_hid elements)
-  try {
-    await page.waitForSelector('[id^="id_hid"]', { timeout: 8000 });
-    console.log('AutoHelp: product grid loaded');
-  } catch (e) {
-    console.log('AutoHelp: waiting for grid timed out, using current HTML');
-  }
-
-  await page.waitForTimeout(1000);
-  const html = await page.content();
   return parseAhResults(html, partNumber);
 }
 
