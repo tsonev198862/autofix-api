@@ -461,6 +461,26 @@ app.post('/api/autohelp-search', async (req, res) => {
       return res.json({ ok: true, results, count: results.length });
     }
 
+    if (action === 'debug_search') {
+      if (!partNumber) return res.status(400).json({ ok: false, error: 'Липсва partNumber' });
+      const page = await getAhPage();
+      const searchUrl = `${AH_BASE}/Products.aspx?MultiView=0&Category=${encodeURIComponent('в Артикул код')}&SearchString=${encodeURIComponent(partNumber)}`;
+      await page.goto(searchUrl, { waitUntil: 'networkidle', timeout: 20000 });
+      await page.waitForTimeout(2000);
+      const html = await page.content();
+      const idHidAt = html.indexOf('id_hid');
+      const w712At = html.indexOf(partNumber.substring(0, 4));
+      return res.json({
+        ok: true,
+        htmlLen: html.length,
+        idHidAt,
+        partNumberAt: w712At,
+        idHidArea: idHidAt > 0 ? html.slice(Math.max(0, idHidAt - 100), idHidAt + 500) : 'NOT FOUND',
+        partArea: w712At > 0 ? html.slice(Math.max(0, w712At - 200), w712At + 1000) : 'NOT FOUND',
+        middle: html.slice(Math.floor(html.length / 2) - 1000, Math.floor(html.length / 2) + 2000),
+      });
+    }
+
     return res.status(400).json({ error: 'Използвай: login, search, session_status' });
   } catch (err) {
     ahLoggedIn = false;
