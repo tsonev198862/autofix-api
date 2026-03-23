@@ -352,6 +352,7 @@ async function ahLogin() {
       if (eq > 0) jar[kv.slice(0,eq).trim()] = kv.slice(eq+1).trim();
     }
     const imgBuf = Buffer.from(await imgResp.arrayBuffer());
+    console.log(`CAPTCHA size=${imgBuf.length}, first10bytes=${imgBuf.slice(0,10).toString('hex')}, contentType=${imgResp.headers.get('content-type')}`);
     if (imgBuf.length < 100) { console.log(`CAPTCHA too small: ${imgBuf.length}`); continue; }
     
     let captchaText;
