@@ -614,6 +614,20 @@ app.post('/api/econt/profiles', async (req, res) => {
 });
 
 // ============ TEST ENDPOINTS ============
+app.get('/api/test-browserless', async (req, res) => {
+  const token = '2UCIThQWi5cyPr9fe3531a6fcf4137dd7106559e0c3bff24b';
+  const script = `export default async function({ page }) {
+    await page.goto('https://example.com', { waitUntil: 'networkidle2', timeout: 10000 });
+    return { title: await page.title(), len: (await page.content()).length };
+  }`;
+  try {
+    const r = await nodeFetch(`https://production-sfo.browserless.io/function?token=${token}`, {
+      method: 'POST', headers: { 'Content-Type': 'application/javascript' }, body: script,
+    });
+    const text = await r.text();
+    res.json({ status: r.status, response: text.slice(0, 300) });
+  } catch (e) { res.json({ error: e.message }); }
+});
 app.get('/api/test-autohelp', async (req, res) => {
   try {
     const r = await fetch('https://eshop.autohelp.bg/Eshop/Login.aspx', { headers: { 'User-Agent': 'Mozilla/5.0' }, signal: AbortSignal.timeout(10000) });
