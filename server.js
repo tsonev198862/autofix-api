@@ -344,9 +344,15 @@ async function ahLogin() {
     
     // Get CAPTCHA
     const captchaMatch = html1.match(/src="(AntiBotPicture\.ashx[^"]*)"/i);
-    if (!captchaMatch) { console.log('No CAPTCHA found'); continue; }
+    if (!captchaMatch) { console.log('No CAPTCHA found, html len=' + html1.length); continue; }
+    // Don't append &_t to avoid breaking the URL params
     const captchaUrl = `https://eshop.autohelp.bg/Eshop/${captchaMatch[1]}`;
-    const imgResp = await nodeFetch(`${captchaUrl}&_t=${Date.now()}`, { headers: { ...hdrs, Cookie: Object.entries(jar).map(([k,v])=>`${k}=${v}`).join('; '), Referer: loginUrl } });
+    console.log('CAPTCHA URL:', captchaUrl.substring(0, 80));
+    const imgResp = await nodeFetch(captchaUrl, { 
+      headers: { ...hdrs, Cookie: Object.entries(jar).map(([k,v])=>`${k}=${v}`).join('; '), Referer: `${AH_BASE}/Login.aspx`, Accept: 'image/png,image/gif,image/*,*/*' },
+      redirect: 'manual'
+    });
+    console.log('CAPTCHA response status:', imgResp.status, 'location:', imgResp.headers.get('location'));
     for (const c of (imgResp.headers.raw()['set-cookie'] || [])) {
       const [kv] = c.split(';'); const eq = kv.indexOf('=');
       if (eq > 0) jar[kv.slice(0,eq).trim()] = kv.slice(eq+1).trim();
