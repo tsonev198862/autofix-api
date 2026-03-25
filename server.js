@@ -266,7 +266,7 @@ const AH_USER = process.env.AUTOHELP_USER || 'MM1441';
 const AH_PASS = process.env.AUTOHELP_PASS || 'MM1441';
 const AH_CAPTCHA_KEY = (process.env.TWOCAPTCHA_KEY || '').trim();
 const AH_TTL = 25 * 60 * 1000;
-const BROWSERLESS_TOKEN = process.env.BROWSERLESS_TOKEN || '2UCIThQWi5cyPr9fe3531a6fcf4137dd7106559e0c3bff24b';
+const BROWSERLESS_TOKEN = process.env.BROWSERLESS_TOKEN || '2UCvvDG6F5JyUrz00859deeb12cb03b724d011b9933c8ed4e';
 
 let ahSession = { cookies: null, timestamp: 0 };
 
@@ -615,7 +615,7 @@ app.post('/api/econt/profiles', async (req, res) => {
 
 // ============ TEST ENDPOINTS ============
 app.get('/api/test-browserless', async (req, res) => {
-  const token = '2UCIThQWi5cyPr9fe3531a6fcf4137dd7106559e0c3bff24b';
+  const token = '2UCvvDG6F5JyUrz00859deeb12cb03b724d011b9933c8ed4e';
   const script = `export default async function({ page }) {
     await page.goto('https://example.com', { waitUntil: 'networkidle2', timeout: 10000 });
     return { title: await page.title(), len: (await page.content()).length };
