@@ -314,98 +314,89 @@ async function browserlessGetPage(url, cookiesArray = []) {
 async function ahLogin() {
   if (ahSession.cookies && Date.now() - ahSession.timestamp < AH_TTL) return ahSession.cookies;
 
-  // Step 1: Get login page via browserless to get real cookies + CAPTCHA
-  const loginUrl = `${AH_BASE}/Login.aspx?cookieCheck=true`;
+  console.log('AutoHelp: logging in via browserless...');
+
+  const script = `
+export default async function({ page }) {
+  await page.goto('https://eshop.autohelp.bg/Eshop/Login.aspx?cookieCheck=true', { waitUntil: 'domcontentloaded', timeout: 20000 });
   
-  // Use fetch for initial page + CAPTCHA (faster)
-  const AH_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
-  const hdrs = { 'User-Agent': AH_UA, 'Accept': 'text/html,*/*;q=0.8', 'Accept-Language': 'bg-BG,bg;q=0.9' };
+  // Find CAPTCHA image
+  const captchaEl = await page.$('img[src*="AntiBotPicture"]');
+  if (!captchaEl) return { error: 'CAPTCHA not found' };
+  
+  // Screenshot CAPTCHA
+  const imgBuffer = await captchaEl.screenshot({ encoding: 'base64' });
+  const pageHtml = await page.content();
+  const cookies = await page.cookies();
+  
+  return { imgBase64: imgBuffer, pageHtml, cookies };
+}`;
 
-  for (let attempt = 1; attempt <= 3; attempt++) {
-    const r0 = await nodeFetch(loginUrl, { headers: hdrs, redirect: 'follow' });
-    let jar = {};
-    for (const c of (r0.headers.raw()['set-cookie'] || [])) {
-      const [kv] = c.split(';'); const eq = kv.indexOf('=');
-      if (eq > 0) jar[kv.slice(0,eq).trim()] = kv.slice(eq+1).trim();
-    }
-    const r1 = await nodeFetch(`${AH_BASE}/Login.aspx`, { headers: { ...hdrs, Cookie: Object.entries(jar).map(([k,v])=>`${k}=${v}`).join('; ') }, redirect: 'follow' });
-    for (const c of (r1.headers.raw()['set-cookie'] || [])) {
-      const [kv] = c.split(';'); const eq = kv.indexOf('=');
-      if (eq > 0) jar[kv.slice(0,eq).trim()] = kv.slice(eq+1).trim();
-    }
-    const html1 = await r1.text();
-    
-    // Extract ASP fields
-    const asp = {};
-    for (const id of ['__VIEWSTATE','__VIEWSTATEGENERATOR','__EVENTVALIDATION','__LASTFOCUS']) {
-      const m = html1.match(new RegExp(`id="${id}"[^>]*value="([^"]*)"`));
-      if (m) asp[id] = m[1];
-    }
-    
-    // Get CAPTCHA
-    const captchaMatch = html1.match(/src="(AntiBotPicture\.ashx[^"]*)"/i);
-    if (!captchaMatch) { console.log('No CAPTCHA found, html len=' + html1.length); continue; }
-    // Don't append &_t to avoid breaking the URL params
-    const captchaUrl = `https://eshop.autohelp.bg/Eshop/${captchaMatch[1]}`;
-    console.log('CAPTCHA URL:', captchaUrl.substring(0, 80));
-    const imgResp = await nodeFetch(captchaUrl, { 
-      headers: { ...hdrs, Cookie: Object.entries(jar).map(([k,v])=>`${k}=${v}`).join('; '), Referer: `${AH_BASE}/Login.aspx`, Accept: 'image/png,image/gif,image/*,*/*' },
-      redirect: 'manual'
-    });
-    console.log('CAPTCHA response status:', imgResp.status, 'location:', imgResp.headers.get('location'));
-    for (const c of (imgResp.headers.raw()['set-cookie'] || [])) {
-      const [kv] = c.split(';'); const eq = kv.indexOf('=');
-      if (eq > 0) jar[kv.slice(0,eq).trim()] = kv.slice(eq+1).trim();
-    }
-    const imgBuf = Buffer.from(await imgResp.arrayBuffer());
-    console.log(`CAPTCHA size=${imgBuf.length}, first10bytes=${imgBuf.slice(0,10).toString('hex')}, contentType=${imgResp.headers.get('content-type')}`);
-    if (imgBuf.length < 100) { console.log(`CAPTCHA too small: ${imgBuf.length}`); continue; }
-    
-    let captchaText;
-    try { captchaText = await ahSolve2captcha(imgBuf.toString('base64')); }
-    catch (e) { return { error: `2captcha: ${e.message}` }; }
+  const r0 = await nodeFetch(`https://production-sfo.browserless.io/function?token=${BROWSERLESS_TOKEN}`, {
+    method: 'POST', headers: { 'Content-Type': 'application/javascript' }, body: script,
+  });
+  const d0 = await r0.json();
+  if (d0.error) return { error: d0.error };
+  if (!d0.imgBase64) return { error: 'No CAPTCHA image from browserless' };
 
-    const cookieStr = Object.entries(jar).map(([k,v])=>`${k}=${v}`).join('; ');
-    const loginBody = new URLSearchParams({
-      __LASTFOCUS: asp.__LASTFOCUS || '', __EVENTTARGET: '', __EVENTARGUMENT: '',
-      __VIEWSTATE: asp.__VIEWSTATE || '', __VIEWSTATEGENERATOR: asp.__VIEWSTATEGENERATOR || '',
-      __EVENTVALIDATION: asp.__EVENTVALIDATION || '',
-      'ctl00$ContentPlaceHolder1$Login1$UserName': AH_USER,
-      'ctl00$ContentPlaceHolder1$Login1$Password': AH_PASS,
-      'ctl00$ContentPlaceHolder1$Login1$txtEnterPicLogin': captchaText,
-      'ctl00$ContentPlaceHolder1$Login1$LoginButton.x': '35',
-      'ctl00$ContentPlaceHolder1$Login1$LoginButton.y': '12',
-    });
+  console.log(`AutoHelp: CAPTCHA captured, size=${d0.imgBase64.length}`);
 
-    const r2 = await nodeFetch(loginUrl, {
-      method: 'POST',
-      headers: { ...hdrs, 'Content-Type': 'application/x-www-form-urlencoded', Cookie: cookieStr, Referer: loginUrl, Origin: 'https://eshop.autohelp.bg' },
-      body: loginBody.toString(), redirect: 'manual',
-    });
-    for (const c of (r2.headers.raw()['set-cookie'] || [])) {
-      const [kv] = c.split(';'); const eq = kv.indexOf('=');
-      if (eq > 0) jar[kv.slice(0,eq).trim()] = kv.slice(eq+1).trim();
-    }
-    const loc = r2.headers.get('location') || '';
-    const html2 = r2.status !== 302 ? await r2.text() : '';
-    const ok = r2.status === 302 || loc.length > 0 || (html2.includes('Кошница') && !html2.includes('txtEnterPicLogin'));
+  // Solve CAPTCHA
+  let captchaText;
+  try { captchaText = await ahSolve2captcha(d0.imgBase64); }
+  catch (e) { return { error: `2captcha: ${e.message}` }; }
 
-    if (ok) {
-      if (loc) {
-        const redirUrl = loc.startsWith('http') ? loc : `https://eshop.autohelp.bg${loc}`;
-        const r3 = await nodeFetch(redirUrl, { headers: { ...hdrs, Cookie: Object.entries(jar).map(([k,v])=>`${k}=${v}`).join('; ') } });
-        for (const c of (r3.headers.raw()['set-cookie'] || [])) {
-          const [kv] = c.split(';'); const eq = kv.indexOf('=');
-          if (eq > 0) jar[kv.slice(0,eq).trim()] = kv.slice(eq+1).trim();
-        }
-      }
-      console.log(`AutoHelp: ✅ login OK attempt ${attempt}, cookies=${Object.keys(jar).join(',')}`);
-      ahSession = { cookies: jar, timestamp: Date.now() };
-      return jar;
-    }
-    console.log(`AutoHelp: attempt ${attempt} failed status=${r2.status}`);
+  // Extract ASP fields from page HTML
+  const asp = {};
+  for (const id of ['__VIEWSTATE','__VIEWSTATEGENERATOR','__EVENTVALIDATION','__LASTFOCUS']) {
+    const m = (d0.pageHtml || '').match(new RegExp(`id="${id}"[^>]*value="([^"]*)"`));
+    if (m) asp[id] = m[1];
   }
-  return { error: 'All 3 login attempts failed' };
+
+  // Convert browserless cookies to jar
+  const jar = {};
+  for (const c of (d0.cookies || [])) jar[c.name] = c.value;
+
+  // Submit login form via browserless (to get proper session cookies)
+  const loginScript = `
+export default async function({ page }) {
+  // Set cookies from first visit
+  await page.setCookie(${JSON.stringify((d0.cookies || []).map(c => ({ name: c.name, value: c.value, domain: 'eshop.autohelp.bg', path: '/' })))});
+  
+  await page.goto('https://eshop.autohelp.bg/Eshop/Login.aspx?cookieCheck=true', { waitUntil: 'domcontentloaded', timeout: 20000 });
+  
+  await page.fill('input[name="ctl00$ContentPlaceHolder1$Login1$UserName"]', '${AH_USER}');
+  await page.fill('input[name="ctl00$ContentPlaceHolder1$Login1$Password"]', '${AH_PASS}');
+  await page.fill('input[name="ctl00$ContentPlaceHolder1$Login1$txtEnterPicLogin"]', '${captchaText.replace(/'/g, "\\'")}');
+  
+  await Promise.all([
+    page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 15000 }),
+    page.click('input[name="ctl00$ContentPlaceHolder1$Login1$LoginButton"]')
+  ]);
+  
+  const url = page.url();
+  const cookies = await page.cookies();
+  const html = await page.content();
+  return { url, cookies, loggedIn: !url.includes('Login') && (html.includes('Кошница') || html.includes('aUserName')) };
+}`;
+
+  const r1 = await nodeFetch(`https://production-sfo.browserless.io/function?token=${BROWSERLESS_TOKEN}`, {
+    method: 'POST', headers: { 'Content-Type': 'application/javascript' }, body: loginScript,
+  });
+  const d1 = await r1.json();
+  
+  if (!d1.loggedIn) {
+    console.log('AutoHelp: login failed, url=' + d1.url);
+    return { error: 'Login failed after CAPTCHA' };
+  }
+
+  // Store cookies
+  const finalJar = {};
+  for (const c of (d1.cookies || [])) finalJar[c.name] = c.value;
+  
+  console.log(`AutoHelp: ✅ logged in, cookies=${Object.keys(finalJar).join(',')}`);
+  ahSession = { cookies: finalJar, timestamp: Date.now() };
+  return finalJar;
 }
 
 async function ahSearch(partNumber) {
