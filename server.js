@@ -335,7 +335,10 @@ export default async function({ page }) {
   const r0 = await nodeFetch(`https://production-sfo.browserless.io/function?token=${BROWSERLESS_TOKEN}`, {
     method: 'POST', headers: { 'Content-Type': 'application/javascript' }, body: script,
   });
-  const d0 = await r0.json();
+  const r0text = await r0.text();
+  console.log('Browserless r0 status:', r0.status, 'body:', r0text.slice(0, 300));
+  let d0;
+  try { d0 = JSON.parse(r0text); } catch(e) { return { error: 'Browserless parse error: ' + r0text.slice(0, 200) }; }
   if (d0.error) return { error: d0.error };
   if (!d0.imgBase64) return { error: 'No CAPTCHA image from browserless' };
 
